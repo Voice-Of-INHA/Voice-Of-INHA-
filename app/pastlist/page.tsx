@@ -2,98 +2,102 @@
 
 import { useState, useEffect } from "react"
 
-
 interface AnalysisRecord {
   id: string
-  date: string
-  time: string
-  duration: string
-  phoneNumber: string
-  risk: 'low' | 'medium' | 'high'
-  confidence: number
-  keywords: string[]
-  summary: string
+  phoneNumber: string // 전화번호 (string type)
+  callDate: string // 통화 날짜 (년, 월, 일) - YYYY-MM-DD 형태
+  callDuration: string // 통화 시간 (분, 초) - MM:SS 형태  
+  riskPercentage: number // 위험도 (%)
+  phishingType: string // 보이스피싱 유형 (계좌번호, 협박 등)
+  audioFileUrl: string // mp3, wav파일 (url)
+  // 기존 필드들은 새로운 필드들로부터 계산될 수 있음
+  risk: 'medium' | 'high'
 }
 
 export default function PastListPage() {
   const [records, setRecords] = useState<AnalysisRecord[]>([])
   const [filteredRecords, setFilteredRecords] = useState<AnalysisRecord[]>([])
   const [searchTerm, setSearchTerm] = useState("")
-  const [filterRisk, setFilterRisk] = useState<'all' | 'high' | 'medium' | 'low'>('all')
+  const [filterRisk, setFilterRisk] = useState<'all' | 'high' | 'medium'>('all')
   const [isLoading, setIsLoading] = useState(true)
 
   // 더미 데이터 (실제로는 DB에서 가져올 데이터)
   const dummyData: AnalysisRecord[] = [
     {
       id: "1",
-      date: "2024-08-16",
-      time: "14:30:22",
-      duration: "5:43",
       phoneNumber: "010-1234-5678",
-      risk: "high",
-      confidence: 87,
-      keywords: ["은행", "계좌이체", "긴급", "보안"],
-      summary: "금융기관을 사칭하여 계좌이체를 요구하는 의심스러운 통화가 감지되었습니다."
+      callDate: "2024-08-16",
+      callDuration: "05:43", // 5분 43초
+      riskPercentage: 87,
+      phishingType: "계좌이체 사기",
+      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240816_143022.mp3",
+      risk: "high"
     },
     {
-      id: "2",
-      date: "2024-08-15",
-      time: "09:15:33",
-      duration: "2:11",
+      id: "2", 
       phoneNumber: "02-9876-5432",
-      risk: "medium",
-      confidence: 64,
-      keywords: ["당첨", "상금", "개인정보"],
-      summary: "상금 당첨을 빌미로 개인정보를 요구하는 통화가 감지되었습니다."
+      callDate: "2024-08-15",
+      callDuration: "02:11", // 2분 11초
+      riskPercentage: 64,
+      phishingType: "상금사기",
+      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240815_091533.wav",
+      risk: "medium"
     },
     {
       id: "3",
-      date: "2024-08-14",
-      time: "16:22:11",
-      duration: "1:35",
-      phoneNumber: "010-5555-1234",
-      risk: "low",
-      confidence: 23,
-      keywords: [],
-      summary: "정상적인 업무 통화로 판단됩니다."
+      phoneNumber: "070-1111-2222",
+      callDate: "2024-08-13", 
+      callDuration: "07:28", // 7분 28초
+      riskPercentage: 92,
+      phishingType: "수사기관 사칭",
+      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240813_114555.wav",
+      risk: "high"
     },
     {
       id: "4",
-      date: "2024-08-13",
-      time: "11:45:55",
-      duration: "7:28",
-      phoneNumber: "070-1111-2222",
-      risk: "high",
-      confidence: 92,
-      keywords: ["검찰청", "체포영장", "계좌확인", "송금"],
-      summary: "수사기관을 사칭하여 금전을 요구하는 보이스피싱 통화가 강력히 의심됩니다."
+      phoneNumber: "010-7777-8888",
+      callDate: "2024-08-12",
+      callDuration: "03:17", // 3분 17초
+      riskPercentage: 71,
+      phishingType: "불법대출",
+      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240812_203344.mp3",
+      risk: "medium"
     },
     {
       id: "5",
-      date: "2024-08-12",
-      time: "20:33:44",
-      duration: "3:17",
-      phoneNumber: "010-7777-8888",
-      risk: "medium",
-      confidence: 71,
-      keywords: ["대출", "신용", "급전"],
-      summary: "불법 대출업체로 의심되는 통화가 감지되었습니다."
+      phoneNumber: "010-8888-9999",
+      callDate: "2024-08-11",
+      callDuration: "06:12", // 6분 12초
+      riskPercentage: 89,
+      phishingType: "협박사기",
+      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240811_131208.wav",
+      risk: "high"
     },
     {
       id: "6",
-      date: "2024-08-11",
-      time: "13:12:08",
-      duration: "4:55",
-      phoneNumber: "010-3333-4444",
-      risk: "low",
-      confidence: 15,
-      keywords: [],
-      summary: "친구와의 일반적인 통화로 판단됩니다."
+      phoneNumber: "02-5555-6666",
+      callDate: "2024-08-10",
+      callDuration: "04:33", // 4분 33초
+      riskPercentage: 58,
+      phishingType: "택배사기",
+      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240810_145520.mp3",
+      risk: "medium"
     }
   ]
 
   useEffect(() => {
     // 실제 환경에서는 API 호출
+    // const fetchRecords = async () => {
+    //   try {
+    //     const response = await fetch('/api/call-records');
+    //     const data = await response.json();
+    //     setRecords(data);
+    //     setFilteredRecords(data);
+    //   } catch (error) {
+    //     console.error('Failed to fetch records:', error);
+    //   }
+    // };
+    
     const loadData = async () => {
       setIsLoading(true)
       // API 호출 시뮬레이션
@@ -114,8 +118,7 @@ export default function PastListPage() {
     if (searchTerm) {
       filtered = filtered.filter(record => 
         record.phoneNumber.includes(searchTerm) ||
-        record.summary.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        record.keywords.some(keyword => keyword.includes(searchTerm))
+        record.phishingType.toLowerCase().includes(searchTerm.toLowerCase())
       )
     }
 
@@ -127,14 +130,12 @@ export default function PastListPage() {
     setFilteredRecords(filtered)
   }, [searchTerm, filterRisk, records])
 
-  const getRiskBadge = (risk: string, confidence: number) => {
+  const getRiskBadge = (riskPercentage: number, risk: string) => {
     switch (risk) {
       case 'high':
-        return <span className="px-3 py-1 bg-red-600 text-white text-sm rounded-full font-medium">위험 {confidence}%</span>
+        return <span className="px-3 py-1 bg-red-600 text-white text-sm rounded-full font-medium">위험 {riskPercentage}%</span>
       case 'medium':
-        return <span className="px-3 py-1 bg-yellow-600 text-white text-sm rounded-full font-medium">주의 {confidence}%</span>
-      case 'low':
-        return <span className="px-3 py-1 bg-green-600 text-white text-sm rounded-full font-medium">안전 {confidence}%</span>
+        return <span className="px-3 py-1 bg-yellow-600 text-white text-sm rounded-full font-medium">주의 {riskPercentage}%</span>
       default:
         return <span className="px-3 py-1 bg-gray-600 text-white text-sm rounded-full font-medium">알 수 없음</span>
     }
@@ -144,9 +145,13 @@ export default function PastListPage() {
     switch (risk) {
       case 'high': return <span className="text-red-500 text-xl">⚠️</span>
       case 'medium': return <span className="text-yellow-500 text-xl">🛡️</span>
-      case 'low': return <span className="text-green-500 text-xl">✅</span>
       default: return <span className="text-gray-400 text-xl">🛡️</span>
     }
+  }
+
+  const getPhishingTypeColor = (phishingType: string) => {
+    if (phishingType.includes('사기') || phishingType.includes('사칭') || phishingType.includes('협박')) return 'bg-red-900 text-red-300'
+    return 'bg-yellow-900 text-yellow-300'
   }
 
   return (
@@ -174,7 +179,7 @@ export default function PastListPage() {
             <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">🔍</span>
             <input
               type="text"
-              placeholder="전화번호나 키워드로 검색..."
+              placeholder="전화번호, 유형으로 검색..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-3 bg-gray-800 border border-gray-600 text-white placeholder-gray-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -210,16 +215,6 @@ export default function PastListPage() {
               }`}
             >
               주의
-            </button>
-            <button
-              onClick={() => setFilterRisk('low')}
-              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
-                filterRisk === 'low' 
-                  ? 'bg-green-600 text-white' 
-                  : 'bg-gray-800 text-green-400 hover:bg-green-600 hover:text-white border border-green-600'
-              }`}
-            >
-              안전
             </button>
           </div>
         </div>
@@ -258,34 +253,27 @@ export default function PastListPage() {
                         <div className="flex items-center space-x-4 text-sm text-gray-400 mt-1">
                           <div className="flex items-center">
                             <span className="mr-1">📅</span>
-                            {record.date}
-                          </div>
-                          <div className="flex items-center">
-                            <span className="mr-1">⏰</span>
-                            {record.time}
+                            {record.callDate}
                           </div>
                           <div className="flex items-center">
                             <span className="mr-1">📞</span>
-                            {record.duration}
+                            {record.callDuration}
                           </div>
                         </div>
                       </div>
                     </div>
-                    {getRiskBadge(record.risk, record.confidence)}
-                  </div>
-                  <p className="text-gray-300 mb-3">{record.summary}</p>
-                  {record.keywords.length > 0 && (
-                    <div className="flex flex-wrap gap-2">
-                      {record.keywords.map((keyword, index) => (
-                        <span 
-                          key={index}
-                          className="px-2 py-1 bg-red-900 text-red-300 text-xs rounded-full"
-                        >
-                          {keyword}
-                        </span>
-                      ))}
+                    <div className="flex flex-col items-end space-y-2">
+                      {getRiskBadge(record.riskPercentage, record.risk)}
                     </div>
-                  )}
+                  </div>                  
+                  
+                  <div className="flex items-center gap-2 mb-3">
+                    <span className="text-gray-400 text-sm">탐지 유형:</span>
+                    <span className={`px-2 py-1 text-xs rounded-full ${getPhishingTypeColor(record.phishingType)}`}>
+                      {record.phishingType}
+                    </span>
+                  </div>
+                  
                   <div className="mt-3 text-right">
                     <span className="text-gray-400 text-sm">클릭하여 상세보기 →</span>
                   </div>
@@ -311,10 +299,10 @@ export default function PastListPage() {
               <div className="text-sm text-gray-400">위험 탐지</div>
             </div>
             <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-center">
-              <div className="text-2xl font-bold text-green-400 mb-1">
-                {records.filter(r => r.risk === 'low').length}
+              <div className="text-2xl font-bold text-yellow-400 mb-1">
+                {records.filter(r => r.risk === 'medium').length}
               </div>
-              <div className="text-sm text-gray-400">안전 확인</div>
+              <div className="text-sm text-gray-400">주의 필요</div>
             </div>
           </div>
         )}

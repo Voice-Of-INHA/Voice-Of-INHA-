@@ -36,7 +36,7 @@ export default function Home() {
 
         {/* 추가 정보 */}
         <div className="mt-16 text-gray-400 text-sm opacity-80">
-          <p>📞 실시간 통화 분석 • 🛡️ AI 기반 탐지 • 📊 상세 리포트 제공</p>
+          <p>📞 실시간 통화 분석 • 🛡️ AI 기반 탐지</p>
         </div>
       </div>
 
