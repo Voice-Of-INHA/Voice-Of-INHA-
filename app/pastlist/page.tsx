@@ -10,21 +10,41 @@ interface AnalysisRecord {
   callDuration: string
   riskPercentage: number
   phishingType: string
+  keywords: string[]
   audioFileUrl: string
   risk: 'medium' | 'high'
 }
 
 // API 응답 데이터의 타입 정의
 interface ApiResponseItem {
-  id?: string
-  _id?: string
-  phoneNumber?: string
-  call_Date?: string
-  created_at?: string
-  call_duration?: string
-  risk_percentage?: number
-  phishing_type?: string
-  audio_file_url?: string
+  id?: number
+  phone?: string
+  callDate?: string
+  totalSeconds?: number
+  riskScore?: number
+  fraudType?: string
+  keywords?: string[]
+  audioUrl?: string
+}
+
+// 초를 "00분 00초" 형식으로 변환하는 함수
+const formatDuration = (totalSeconds: number): string => {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes.toString().padStart(2, '0')}분 ${seconds.toString().padStart(2, '0')}초`
+}
+
+// 날짜를 "0000년00월00일" 형식으로 변환하는 함수
+const formatDate = (dateString: string): string => {
+  try {
+    const date = new Date(dateString)
+    const year = date.getFullYear()
+    const month = (date.getMonth() + 1).toString().padStart(2, '0')
+    const day = date.getDate().toString().padStart(2, '0')
+    return `${year}년${month}월${day}일`
+  } catch {
+    return dateString // 변환 실패 시 원본 반환
+  }
 }
 
 export default function PastListPage() {
@@ -53,16 +73,20 @@ export default function PastListPage() {
       console.log("✅ 분석 이력 조회 성공:", data)
 
       const formattedRecords: AnalysisRecord[] = data.map((item) => {
-        const riskPercentage = item.risk_percentage || 0;
+        const riskScore = item.riskScore || 0;
+        const callDate = item.callDate ? formatDate(item.callDate) : new Date().toISOString().split('T')[0]
+        const callDuration = item.totalSeconds ? formatDuration(item.totalSeconds) : "00분 00초"
+        
         return {
-          id: item.id || item._id || `${Date.now()}-${Math.random()}`,
-          phoneNumber: item.phoneNumber || "알 수 없음",
-          callDate: item.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
-          callDuration: item.call_duration || "00:00",
-          riskPercentage: riskPercentage,
-          phishingType: item.phishing_type || "분석 중",
-          audioFileUrl: item.audio_file_url || "",
-          risk: riskPercentage >= 70 ? 'high' : 'medium'
+          id: item.id?.toString() || Math.random().toString(),
+          phoneNumber: item.phone || "알 수 없음",
+          callDate: callDate,
+          callDuration: callDuration,
+          riskPercentage: riskScore,
+          phishingType: item.fraudType || "분석 중",
+          keywords: item.keywords || [],
+          audioFileUrl: item.audioUrl || "",
+          risk: riskScore >= 70 ? 'high' : 'medium'
         }
       })
       
@@ -70,7 +94,6 @@ export default function PastListPage() {
     } catch (error) {
       console.error("❌ 분석 이력 조회 실패:", error)
       setError(error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다")
-      // 더미 데이터 제거 - 에러 발생 시 빈 배열로 설정
       setRecords([])
     } finally {
       setIsLoading(false)
@@ -87,7 +110,8 @@ export default function PastListPage() {
     if (searchTerm) {
       filtered = filtered.filter(record => 
         record.phoneNumber.includes(searchTerm) ||
-        record.phishingType.toLowerCase().includes(searchTerm.toLowerCase())
+        record.phishingType.toLowerCase().includes(searchTerm.toLowerCase()) ||
+        record.keywords.some(keyword => keyword.toLowerCase().includes(searchTerm.toLowerCase()))
       )
     }
 
@@ -160,7 +184,7 @@ export default function PastListPage() {
             <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">🔍</span>
             <input
               type="text"
-              placeholder="전화번호, 유형으로 검색..."
+              placeholder="전화번호, 유형, 키워드로 검색..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
               className="w-full pl-10 pr-4 py-3 bg-gray-800 border border-gray-600 text-white placeholder-gray-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
@@ -257,11 +281,25 @@ export default function PastListPage() {
                         {getRiskBadge(record.riskPercentage, record.risk)}
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2">
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
                       <span className={`px-2 py-1 text-xs rounded-full ${getPhishingTypeColor(record.phishingType)}`}>
                         {record.phishingType}
                       </span>
                     </div>
+                    {record.keywords.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {record.keywords.slice(0, 3).map((keyword, index) => (
+                          <span key={index} className="px-2 py-1 bg-blue-900 text-blue-300 text-xs rounded">
+                            {keyword}
+                          </span>
+                        ))}
+                        {record.keywords.length > 3 && (
+                          <span className="px-2 py-1 bg-gray-700 text-gray-300 text-xs rounded">
+                            +{record.keywords.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
               ))}

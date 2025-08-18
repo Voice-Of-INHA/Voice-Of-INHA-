@@ -5,14 +5,46 @@ import { useState, useEffect, useCallback } from "react"
 // 실제 DB에 저장된 데이터 구조
 interface AnalysisRecord {
   id: string
-  phoneNumber: string // 전화번호 (string type)
-  callDate: string // 통화 날짜 (년, 월, 일) - YYYY-MM-DD 형태
-  callDuration: string // 통화 시간 (분, 초) - MM:SS 형태  
-  riskPercentage: number // 위험도 (%)
-  phishingType: string // 보이스피싱 유형 (계좌번호, 협박 등)
-  reason: string // 원인 (문자열 / ~~한 이유로 ~~를 받았습니다.)
-  audioFileUrl: string // mp3, wav파일 (url)
-  risk: 'medium' | 'high' // 위험도에 따른 레벨
+  phoneNumber: string
+  callDate: string // 0000년00월00일 형식
+  callDuration: string // 00분 00초 형식
+  riskPercentage: number
+  phishingType: string
+  keywords: string[]
+  audioFileUrl: string
+  risk: 'medium' | 'high'
+}
+
+// API 응답 데이터의 타입 정의
+interface ApiResponseItem {
+  id?: number
+  phone?: string
+  callDate?: string
+  totalSeconds?: number
+  riskScore?: number
+  fraudType?: string
+  keywords?: string[]
+  audioUrl?: string
+}
+
+// 초를 "00분 00초" 형식으로 변환하는 함수
+const formatDuration = (totalSeconds: number): string => {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes.toString().padStart(2, '0')}분 ${seconds.toString().padStart(2, '0')}초`
+}
+
+// 날짜를 "0000년00월00일" 형식으로 변환하는 함수
+const formatDate = (dateString: string): string => {
+  try {
+    const date = new Date(dateString)
+    const year = date.getFullYear()
+    const month = (date.getMonth() + 1).toString().padStart(2, '0')
+    const day = date.getDate().toString().padStart(2, '0')
+    return `${year}년${month}월${day}일`
+  } catch {
+    return dateString // 변환 실패 시 원본 반환
+  }
 }
 
 export default function AnalysisDetailPage() {
@@ -33,72 +65,72 @@ export default function AnalysisDetailPage() {
   
   const id = getId()
 
-  // 예시 데이터 생성 함수
+  // 예시 데이터 생성 함수 (새로운 형식으로 업데이트)
   const getExampleData = (recordId: string): AnalysisRecord => {
     const examples = {
       "1": {
         id: "1",
         phoneNumber: "010-1234-5678",
-        callDate: "2024-08-16",
-        callDuration: "05:43",
+        callDate: "2024년08월16일",
+        callDuration: "05분43초",
         riskPercentage: 87,
         phishingType: "계좌이체 사기",
-        reason: "금융기관을 사칭하여 긴급한 계좌이체를 요구한 이유로 고위험으로 분류되었습니다.",
+        keywords: ["계좌이체", "긴급", "금융기관", "본인확인"],
         audioFileUrl: `/api/proxy?path=audio&id=1`,
         risk: "high" as const
       },
       "2": {
         id: "2",
         phoneNumber: "02-9876-5432",
-        callDate: "2024-08-15",
-        callDuration: "02:11",
+        callDate: "2024년08월15일",
+        callDuration: "02분11초",
         riskPercentage: 64,
         phishingType: "상금사기",
-        reason: "가짜 당첨을 빌미로 개인정보 및 수수료를 요구한 이유로 중위험으로 분류되었습니다.",
+        keywords: ["당첨", "상금", "수수료", "개인정보"],
         audioFileUrl: `/api/proxy?path=audio&id=2`,
         risk: "medium" as const
       },
       "3": {
         id: "3",
         phoneNumber: "070-1111-2222",
-        callDate: "2024-08-13",
-        callDuration: "07:28",
+        callDate: "2024년08월13일",
+        callDuration: "07분28초",
         riskPercentage: 92,
         phishingType: "수사기관 사칭",
-        reason: "검찰청을 사칭하여 체포영장 및 계좌확인을 요구한 이유로 고위험으로 분류되었습니다.",
+        keywords: ["검찰청", "체포영장", "계좌확인", "수사"],
         audioFileUrl: `/api/proxy?path=audio&id=3`,
         risk: "high" as const
       },
       "4": {
         id: "4",
         phoneNumber: "010-7777-8888",
-        callDate: "2024-08-12",
-        callDuration: "03:17",
+        callDate: "2024년08월12일",
+        callDuration: "03분17초",
         riskPercentage: 71,
         phishingType: "불법대출",
-        reason: "고금리 불법 대출업체로 의심되는 통화 패턴이 감지된 이유로 중위험으로 분류되었습니다.",
+        keywords: ["대출", "고금리", "즉시승인", "신용등급"],
         audioFileUrl: `/api/proxy?path=audio&id=4`,
         risk: "medium" as const
       },
       "5": {
         id: "5",
         phoneNumber: "010-8888-9999",
-        callDate: "2024-08-11",
-        callDuration: "06:12",
+        callDate: "2024년08월11일",
+        callDuration: "06분12초",
         riskPercentage: 89,
         phishingType: "협박사기",
-        reason: "개인정보 유출을 빌미로 협박하며 금전을 요구한 이유로 고위험으로 분류되었습니다.",
+        keywords: ["개인정보", "유출", "협박", "금전요구"],
         audioFileUrl: `/api/proxy?path=audio&id=5`,
         risk: "high" as const
       },
       "6": {
         id: "6",
         phoneNumber: "02-5555-6666",
-        callDate: "2024-08-10",
-        callDuration: "04:33",
+        callDate: "2024년08월10일",
+        callDuration: "04분33초",
         riskPercentage: 58,
         phishingType: "택배사기",
-        reason: "택배 관련 수수료를 요구하는 의심스러운 통화가 감지된 이유로 중위험으로 분류되었습니다.",
+        keywords: ["택배", "수수료", "배송비", "결제"],
         audioFileUrl: `/api/proxy?path=audio&id=6`,
         risk: "medium" as const
       }
@@ -107,7 +139,7 @@ export default function AnalysisDetailPage() {
     return examples[recordId as keyof typeof examples] || examples["1"]
   }
 
-  // 백엔드에서 상세 데이터 가져오기 (현재는 예시 데이터 사용)
+  // 백엔드에서 상세 데이터 가져오기
   const loadDetailData = useCallback(async (recordId: string) => {
     setIsLoading(true)
     setError(null)
@@ -115,7 +147,7 @@ export default function AnalysisDetailPage() {
     try {
       console.log(`📄 상세 분석 결과 조회 시작: ID=${recordId}`)
       
-      // 실제 API 호출 (주석 처리)
+      // 실제 API 호출 (주석 처리 - 백엔드 준비되면 활성화)
       /*
       const response = await fetch(`/api/proxy?path=detail&id=${recordId}`)
       
@@ -124,20 +156,20 @@ export default function AnalysisDetailPage() {
         throw new Error(`서버 오류: ${response.status} - ${errorText}`)
       }
       
-      const data = await response.json()
+      const data: ApiResponseItem = await response.json()
       console.log("✅ 상세 분석 결과 조회 성공:", data)
       
       // 백엔드 데이터를 AnalysisRecord 형식으로 변환
       const formattedRecord: AnalysisRecord = {
-        id: data.id || recordId,
-        phoneNumber: data.phoneNumber || data.phone_number || "알 수 없음",
-        callDate: data.callDate || data.call_date || data.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
-        callDuration: data.callDuration || data.call_duration || data.duration || "00:00",
-        riskPercentage: data.riskPercentage || data.risk_percentage || data.risk_score || 0,
-        phishingType: data.phishingType || data.phishing_type || data.analysis_type || "분석 중",
-        reason: data.reason || data.analysis_reason || "분석 결과가 없습니다.",
-        audioFileUrl: data.audioFileUrl || data.audio_file_url || `/api/proxy?path=audio&id=${recordId}`,
-        risk: (data.riskPercentage || data.risk_percentage || data.risk_score || 0) >= 70 ? 'high' : 'medium'
+        id: data.id?.toString() || recordId,
+        phoneNumber: data.phone || "알 수 없음",
+        callDate: data.callDate ? formatDate(data.callDate) : new Date().toISOString().split('T')[0],
+        callDuration: data.totalSeconds ? formatDuration(data.totalSeconds) : "00분 00초",
+        riskPercentage: data.riskScore || 0,
+        phishingType: data.fraudType || "분석 중",
+        keywords: data.keywords || [],
+        audioFileUrl: data.audioUrl || `/api/proxy?path=audio&id=${recordId}`,
+        risk: (data.riskScore || 0) >= 70 ? 'high' : 'medium'
       }
       
       setRecord(formattedRecord)
@@ -156,13 +188,13 @@ export default function AnalysisDetailPage() {
     } finally {
       setTimeout(() => setIsLoading(false), 800)
     }
-  }, []) // Empty dependency array since it doesn't depend on any state/props
+  }, [])
 
   useEffect(() => {
     if (id) {
       loadDetailData(id)
     }
-  }, [id, loadDetailData]) // Now includes loadDetailData dependency
+  }, [id, loadDetailData])
 
   const getRiskBadge = (riskPercentage: number, risk: string) => {
     switch (risk) {
@@ -313,6 +345,7 @@ export default function AnalysisDetailPage() {
             </div>
           </div>
         </div>
+        
         {/* 기본 정보 카드 */}
         <div className="bg-gray-900 border border-gray-700 rounded-lg p-8">
           <div className="flex items-center justify-between mb-6">
@@ -343,6 +376,20 @@ export default function AnalysisDetailPage() {
             </span>
           </div>
 
+          {/* 키워드 표시 */}
+          {record.keywords.length > 0 && (
+            <div className="mb-6">
+              <span className="text-gray-400 text-sm mb-2 block">탐지된 키워드:</span>
+              <div className="flex flex-wrap gap-2">
+                {record.keywords.map((keyword, index) => (
+                  <span key={index} className="px-2 py-1 bg-blue-900 text-blue-300 text-sm rounded border border-blue-600">
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+
           {/* 오디오 재생 */}
           <div className="mb-6">
             <button 
@@ -369,7 +416,10 @@ export default function AnalysisDetailPage() {
         <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
           <h3 className="text-lg font-semibold text-white mb-4">🔍 분석 결과</h3>
           <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-300 leading-relaxed">{record.reason}</p>
+            <p className="text-gray-300 leading-relaxed">
+              {record.phishingType}으로 분류된 통화입니다. 
+              {record.keywords.length > 0 && ` 주요 키워드: ${record.keywords.join(', ')}`}
+            </p>
           </div>
         </div>
 
