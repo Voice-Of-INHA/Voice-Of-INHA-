@@ -2,7 +2,8 @@
 
 import { useState, useEffect } from "react"
 
-interface DetailedAnalysisRecord {
+// 실제 DB에 저장된 데이터 구조
+interface AnalysisRecord {
   id: string
   phoneNumber: string // 전화번호 (string type)
   callDate: string // 통화 날짜 (년, 월, 일) - YYYY-MM-DD 형태
@@ -11,32 +12,17 @@ interface DetailedAnalysisRecord {
   phishingType: string // 보이스피싱 유형 (계좌번호, 협박 등)
   reason: string // 원인 (문자열 / ~~한 이유로 ~~를 받았습니다.)
   audioFileUrl: string // mp3, wav파일 (url)
-  // 추가 분석 데이터
-  risk: 'medium' | 'high'
-  keywords: string[]
-  transcript: string
-  suspiciousTimes: Array<{
-    startTime: string
-    endTime: string
-    reason: string
-    severity: 'medium' | 'high'
-  }>
-  analysisDetails: {
-    voicePattern: string
-    speechSpeed: number
-    emotionDetection: string
-    backgroundNoise: string
-  }
-  recommendations: string[]
+  risk: 'medium' | 'high' // 위험도에 따른 레벨
 }
 
 export default function AnalysisDetailPage() {
-  const [record, setRecord] = useState<DetailedAnalysisRecord | null>(null)
+  const [record, setRecord] = useState<AnalysisRecord | null>(null)
   const [isLoading, setIsLoading] = useState(true)
   const [isPlaying, setIsPlaying] = useState(false)
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null)
+  const [error, setError] = useState<string | null>(null)
   
-  // URL에서 ID 추출 (간단한 방법)
+  // URL에서 ID 추출
   const getId = () => {
     if (typeof window !== 'undefined') {
       const pathParts = window.location.pathname.split('/')
@@ -47,9 +33,9 @@ export default function AnalysisDetailPage() {
   
   const id = getId()
 
-  // pastlist에서 전달받은 데이터와 매칭하는 더미 데이터 (실제로는 DB에서 가져올 데이터)
-  const getDummyDetailData = (id: string): DetailedAnalysisRecord => {
-    const baseData = {
+  // 예시 데이터 생성 함수
+  const getExampleData = (recordId: string): AnalysisRecord => {
+    const examples = {
       "1": {
         id: "1",
         phoneNumber: "010-1234-5678",
@@ -58,42 +44,8 @@ export default function AnalysisDetailPage() {
         riskPercentage: 87,
         phishingType: "계좌이체 사기",
         reason: "금융기관을 사칭하여 긴급한 계좌이체를 요구한 이유로 고위험으로 분류되었습니다.",
-        audioFileUrl: "http://127.0.0.1:3000/audio/call_20240816_143022.mp3",
-        risk: "high" as const,
-        keywords: ["은행", "계좌이체", "긴급", "보안", "입금확인"],
-        transcript: "안녕하세요 고객님, 국민은행 보안팀입니다. 고객님의 계좌에서 의심스러운 거래가 감지되어 연락드렸습니다. 지금 당장 계좌 보안을 위해 계좌번호와 비밀번호를 확인해주셔야 합니다. 만약 지금 확인해주지 않으면 계좌가 동결될 수 있습니다.",
-        suspiciousTimes: [
-          {
-            startTime: "00:45",
-            endTime: "01:23",
-            reason: "금융기관 사칭 발언 감지",
-            severity: "high" as const
-          },
-          {
-            startTime: "02:15",
-            endTime: "03:02",
-            reason: "개인정보 요구 패턴 감지",
-            severity: "high" as const
-          },
-          {
-            startTime: "04:10",
-            endTime: "04:45",
-            reason: "긴급성을 강조하는 협박성 발언",
-            severity: "medium" as const
-          }
-        ],
-        analysisDetails: {
-          voicePattern: "기계적이고 빠른 말투, 스크립트를 읽는 패턴",
-          speechSpeed: 180,
-          emotionDetection: "긴장감, 압박감 조성",
-          backgroundNoise: "콜센터 환경 소음 감지"
-        },
-        recommendations: [
-          "즉시 통화를 종료하고 실제 은행에 확인 전화",
-          "개인정보는 절대 전화로 제공하지 말 것",
-          "112 신고 고려",
-          "가족들에게 보이스피싱 주의 알림"
-        ]
+        audioFileUrl: `/api/proxy?path=audio&id=1`,
+        risk: "high" as const
       },
       "2": {
         id: "2",
@@ -103,36 +55,8 @@ export default function AnalysisDetailPage() {
         riskPercentage: 64,
         phishingType: "상금사기",
         reason: "가짜 당첨을 빌미로 개인정보 및 수수료를 요구한 이유로 중위험으로 분류되었습니다.",
-        audioFileUrl: "http://127.0.0.1:3000/audio/call_20240815_091533.wav",
-        risk: "medium" as const,
-        keywords: ["당첨", "상금", "개인정보", "수수료", "인증"],
-        transcript: "축하드립니다! 고객님께서 온라인 이벤트에 당첨되셨습니다. 상금 500만원을 받으시려면 개인정보 확인과 수수료 30만원을 먼저 입금해주셔야 합니다. 오늘 안에 처리하지 않으면 당첨이 취소됩니다.",
-        suspiciousTimes: [
-          {
-            startTime: "00:20",
-            endTime: "00:55",
-            reason: "허위 당첨 안내",
-            severity: "medium" as const
-          },
-          {
-            startTime: "01:30",
-            endTime: "02:05",
-            reason: "수수료 선입금 요구",
-            severity: "high" as const
-          }
-        ],
-        analysisDetails: {
-          voicePattern: "흥미를 유발하는 감정적 말투",
-          speechSpeed: 175,
-          emotionDetection: "흥분, 급박함 조성",
-          backgroundNoise: "콜센터 환경"
-        },
-        recommendations: [
-          "당첨 사실을 공식 채널로 확인",
-          "수수료 선입금 요구 시 사기 의심",
-          "개인정보 제공 거부",
-          "소비자보호원 신고 고려"
-        ]
+        audioFileUrl: `/api/proxy?path=audio&id=2`,
+        risk: "medium" as const
       },
       "3": {
         id: "3",
@@ -142,42 +66,8 @@ export default function AnalysisDetailPage() {
         riskPercentage: 92,
         phishingType: "수사기관 사칭",
         reason: "검찰청을 사칭하여 체포영장 및 계좌확인을 요구한 이유로 고위험으로 분류되었습니다.",
-        audioFileUrl: "http://127.0.0.1:3000/audio/call_20240813_114555.wav",
-        risk: "high" as const,
-        keywords: ["검찰청", "체포영장", "계좌확인", "송금", "수사"],
-        transcript: "안녕하세요, 서울중앙지방검찰청 김철수 검사입니다. 고객님과 관련된 금융사기 사건이 접수되어 연락드렸습니다. 고객님 명의로 개설된 계좌가 사기에 악용되고 있어 체포영장이 발부될 예정입니다. 지금 즉시 계좌의 돈을 안전계좌로 이체해주셔야 합니다.",
-        suspiciousTimes: [
-          {
-            startTime: "00:15",
-            endTime: "01:10",
-            reason: "검찰청 사칭 발언",
-            severity: "high" as const
-          },
-          {
-            startTime: "03:20",
-            endTime: "04:15",
-            reason: "체포영장 협박",
-            severity: "high" as const
-          },
-          {
-            startTime: "05:30",
-            endTime: "06:45",
-            reason: "안전계좌 이체 요구",
-            severity: "high" as const
-          }
-        ],
-        analysisDetails: {
-          voicePattern: "권위적이고 위협적인 말투",
-          speechSpeed: 160,
-          emotionDetection: "공포감 조성, 권위적 압박",
-          backgroundNoise: "사무실 환경"
-        },
-        recommendations: [
-          "즉시 통화 종료",
-          "112 또는 검찰청에 직접 확인",
-          "계좌 이체 절대 금지",
-          "주변인들에게 상황 공유"
-        ]
+        audioFileUrl: `/api/proxy?path=audio&id=3`,
+        risk: "high" as const
       },
       "4": {
         id: "4",
@@ -187,36 +77,8 @@ export default function AnalysisDetailPage() {
         riskPercentage: 71,
         phishingType: "불법대출",
         reason: "고금리 불법 대출업체로 의심되는 통화 패턴이 감지된 이유로 중위험으로 분류되었습니다.",
-        audioFileUrl: "http://127.0.0.1:3000/audio/call_20240812_203344.mp3",
-        risk: "medium" as const,
-        keywords: ["대출", "신용", "급전", "금리", "승인"],
-        transcript: "안녕하세요, 금융대출 전문 상담사입니다. 고객님께서 신청하신 대출 건으로 연락드렸습니다. 지금 바로 승인 가능하며, 신용등급에 관계없이 최대 5천만원까지 가능합니다. 다만 수수료로 50만원을 먼저 입금해주셔야 합니다.",
-        suspiciousTimes: [
-          {
-            startTime: "00:30",
-            endTime: "01:15",
-            reason: "허위 대출 승인 멘트",
-            severity: "medium" as const
-          },
-          {
-            startTime: "02:20",
-            endTime: "02:55",
-            reason: "선수수료 요구",
-            severity: "high" as const
-          }
-        ],
-        analysisDetails: {
-          voicePattern: "친근하지만 유도적인 말투",
-          speechSpeed: 170,
-          emotionDetection: "친밀감 조성, 긴급성 부여",
-          backgroundNoise: "사무실 환경"
-        },
-        recommendations: [
-          "정식 금융기관 확인 필수",
-          "선수수료 요구 시 즉시 의심",
-          "금융감독원 신고 고려",
-          "주변인과 상담 후 결정"
-        ]
+        audioFileUrl: `/api/proxy?path=audio&id=4`,
+        risk: "medium" as const
       },
       "5": {
         id: "5",
@@ -226,42 +88,8 @@ export default function AnalysisDetailPage() {
         riskPercentage: 89,
         phishingType: "협박사기",
         reason: "개인정보 유출을 빌미로 협박하며 금전을 요구한 이유로 고위험으로 분류되었습니다.",
-        audioFileUrl: "http://127.0.0.1:3000/audio/call_20240811_131208.wav",
-        risk: "high" as const,
-        keywords: ["협박", "개인정보", "유출", "피해", "긴급"],
-        transcript: "고객님의 개인정보가 해킹당해서 큰일났습니다. 지금 당장 조치를 취하지 않으면 더 큰 피해가 발생할 수 있습니다. 보안업체에서 긴급 처리비로 100만원을 요구하고 있습니다. 즉시 입금하지 않으면 모든 계좌가 털릴 수 있습니다.",
-        suspiciousTimes: [
-          {
-            startTime: "00:30",
-            endTime: "01:20",
-            reason: "개인정보 유출 허위 주장",
-            severity: "high" as const
-          },
-          {
-            startTime: "03:15",
-            endTime: "04:30",
-            reason: "금전 요구 및 협박",
-            severity: "high" as const
-          },
-          {
-            startTime: "05:00",
-            endTime: "05:45",
-            reason: "긴급성 강조로 판단력 흐리기",
-            severity: "medium" as const
-          }
-        ],
-        analysisDetails: {
-          voicePattern: "급박하고 위협적인 말투",
-          speechSpeed: 190,
-          emotionDetection: "공포감, 급박함 조성",
-          backgroundNoise: "사무실 환경"
-        },
-        recommendations: [
-          "즉시 통화 종료 및 112 신고",
-          "절대 금전 송금 금지",
-          "실제 보안업체에 직접 확인",
-          "가족 및 지인에게 상황 공유"
-        ]
+        audioFileUrl: `/api/proxy?path=audio&id=5`,
+        risk: "high" as const
       },
       "6": {
         id: "6",
@@ -271,60 +99,68 @@ export default function AnalysisDetailPage() {
         riskPercentage: 58,
         phishingType: "택배사기",
         reason: "택배 관련 수수료를 요구하는 의심스러운 통화가 감지된 이유로 중위험으로 분류되었습니다.",
-        audioFileUrl: "http://127.0.0.1:3000/audio/call_20240810_145520.mp3",
-        risk: "medium" as const,
-        keywords: ["택배", "수수료", "배송", "결제", "확인"],
-        transcript: "안녕하세요, CJ대한통운입니다. 고객님께 보낸 택배가 관세 문제로 보류되어 있습니다. 추가 수수료 15만원을 입금해주시면 바로 배송 가능합니다. 오늘 안에 처리하지 않으면 반송될 예정입니다.",
-        suspiciousTimes: [
-          {
-            startTime: "01:00",
-            endTime: "01:45",
-            reason: "허위 관세 문제 주장",
-            severity: "medium" as const
-          },
-          {
-            startTime: "03:20",
-            endTime: "04:10",
-            reason: "추가 수수료 입금 요구",
-            severity: "high" as const
-          }
-        ],
-        analysisDetails: {
-          voicePattern: "공식적이지만 유도적인 말투",
-          speechSpeed: 165,
-          emotionDetection: "신뢰감 조성, 긴급성 부여",
-          backgroundNoise: "콜센터 환경"
-        },
-        recommendations: [
-          "택배회사에 직접 확인 전화",
-          "추가 수수료 요구 시 사기 의심",
-          "송장번호 및 발송인 확인",
-          "의심스러우면 즉시 신고"
-        ]
+        audioFileUrl: `/api/proxy?path=audio&id=6`,
+        risk: "medium" as const
       }
     }
 
-    return baseData[id as keyof typeof baseData] || baseData["1"]
+    return examples[recordId as keyof typeof examples] || examples["1"]
+  }
+
+  // 백엔드에서 상세 데이터 가져오기 (현재는 예시 데이터 사용)
+  const loadDetailData = async (recordId: string) => {
+    setIsLoading(true)
+    setError(null)
+    
+    try {
+      console.log(`📄 상세 분석 결과 조회 시작: ID=${recordId}`)
+      
+      // 실제 API 호출 (주석 처리)
+      /*
+      const response = await fetch(`/api/proxy?path=detail&id=${recordId}`)
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`서버 오류: ${response.status} - ${errorText}`)
+      }
+      
+      const data = await response.json()
+      console.log("✅ 상세 분석 결과 조회 성공:", data)
+      
+      // 백엔드 데이터를 AnalysisRecord 형식으로 변환
+      const formattedRecord: AnalysisRecord = {
+        id: data.id || recordId,
+        phoneNumber: data.phoneNumber || data.phone_number || "알 수 없음",
+        callDate: data.callDate || data.call_date || data.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+        callDuration: data.callDuration || data.call_duration || data.duration || "00:00",
+        riskPercentage: data.riskPercentage || data.risk_percentage || data.risk_score || 0,
+        phishingType: data.phishingType || data.phishing_type || data.analysis_type || "분석 중",
+        reason: data.reason || data.analysis_reason || "분석 결과가 없습니다.",
+        audioFileUrl: data.audioFileUrl || data.audio_file_url || `/api/proxy?path=audio&id=${recordId}`,
+        risk: (data.riskPercentage || data.risk_percentage || data.risk_score || 0) >= 70 ? 'high' : 'medium'
+      }
+      
+      setRecord(formattedRecord)
+      */
+      
+      // 현재는 예시 데이터 사용 (UI 확인용)
+      setTimeout(() => {
+        const exampleRecord = getExampleData(recordId)
+        setRecord(exampleRecord)
+        console.log("✅ 예시 데이터 로드 완료:", exampleRecord)
+      }, 800) // 로딩 시뮬레이션
+      
+    } catch (error) {
+      console.error("❌ 상세 분석 결과 조회 실패:", error)
+      setError(error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다")
+    } finally {
+      setTimeout(() => setIsLoading(false), 800)
+    }
   }
 
   useEffect(() => {
-    const loadDetailData = async () => {
-      setIsLoading(true)
-      // 실제 환경에서는 API 호출
-      // const response = await fetch(`/api/call-records/${id}`);
-      // const data = await response.json();
-      // setRecord(data);
-      
-      // API 호출 시뮬레이션
-      setTimeout(() => {
-        const data = getDummyDetailData(id)
-        setRecord(data)
-        setIsLoading(false)
-      }, 800)
-    }
-
     if (id) {
-      loadDetailData()
+      loadDetailData(id)
     }
   }, [id])
 
@@ -339,22 +175,19 @@ export default function AnalysisDetailPage() {
     }
   }
 
-  const getSeverityBadge = (severity: string) => {
-    switch (severity) {
-      case 'high':
-        return <span className="px-2 py-1 bg-red-600 text-white text-xs rounded">높음</span>
-      case 'medium':
-        return <span className="px-2 py-1 bg-yellow-600 text-white text-xs rounded">보통</span>
-      default:
-        return <span className="px-2 py-1 bg-gray-600 text-white text-xs rounded">알 수 없음</span>
-    }
-  }
-
   const getPhishingTypeColor = (phishingType: string) => {
     if (phishingType.includes('사기') || phishingType.includes('사칭') || phishingType.includes('협박')) {
       return 'bg-red-900 text-red-300 border border-red-600'
     }
     return 'bg-yellow-900 text-yellow-300 border border-yellow-600'
+  }
+
+  const getRiskIcon = (risk: string) => {
+    switch (risk) {
+      case 'high': return <span className="text-red-500 text-3xl">⚠️</span>
+      case 'medium': return <span className="text-yellow-500 text-3xl">🛡️</span>
+      default: return <span className="text-gray-400 text-3xl">🛡️</span>
+    }
   }
 
   const handleAudioPlay = async () => {
@@ -371,15 +204,30 @@ export default function AnalysisDetailPage() {
         audioElement.play()
         setIsPlaying(true)
       } else {
-        // 실제로는 S3에서 오디오 파일을 가져옴
+        console.log("🎵 오디오 재생 시작:", record.audioFileUrl)
+        
         const audio = new Audio(record.audioFileUrl)
-        audio.onloadstart = () => setIsLoading(true)
-        audio.oncanplay = () => setIsLoading(false)
-        audio.onplay = () => setIsPlaying(true)
-        audio.onpause = () => setIsPlaying(false)
-        audio.onended = () => setIsPlaying(false)
-        audio.onerror = () => {
-          alert('오디오 파일을 재생할 수 없습니다.')
+        audio.onloadstart = () => {
+          console.log("🎵 오디오 로딩 시작")
+        }
+        audio.oncanplay = () => {
+          console.log("🎵 오디오 재생 준비 완료")
+        }
+        audio.onplay = () => {
+          console.log("🎵 오디오 재생 중")
+          setIsPlaying(true)
+        }
+        audio.onpause = () => {
+          console.log("🎵 오디오 일시정지")
+          setIsPlaying(false)
+        }
+        audio.onended = () => {
+          console.log("🎵 오디오 재생 완료")
+          setIsPlaying(false)
+        }
+        audio.onerror = (e) => {
+          console.error("❌ 오디오 재생 오류:", e)
+          alert('오디오 파일을 재생할 수 없습니다. 파일이 손상되었거나 서버에서 접근할 수 없습니다.')
           setIsPlaying(false)
         }
         
@@ -387,8 +235,15 @@ export default function AnalysisDetailPage() {
         await audio.play()
       }
     } catch (error) {
-      console.error('Audio play error:', error)
+      console.error('❌ 오디오 재생 실패:', error)
       alert('오디오 재생 중 오류가 발생했습니다.')
+      setIsPlaying(false)
+    }
+  }
+
+  const handleRefresh = () => {
+    if (id) {
+      loadDetailData(id)
     }
   }
 
@@ -403,12 +258,20 @@ export default function AnalysisDetailPage() {
     )
   }
 
-  if (!record) {
+  if (error || !record) {
     return (
       <div className="min-h-screen bg-black flex items-center justify-center">
         <div className="text-center">
           <div className="text-6xl text-gray-400 mb-4">❌</div>
-          <p className="text-gray-400 text-lg">데이터를 찾을 수 없습니다.</p>
+          <p className="text-gray-400 text-lg">
+            {error || "데이터를 찾을 수 없습니다."}
+          </p>
+          <button 
+            onClick={handleRefresh}
+            className="mt-4 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors"
+          >
+            다시 시도
+          </button>
         </div>
       </div>
     )
@@ -428,83 +291,160 @@ export default function AnalysisDetailPage() {
           <h1 className="text-2xl font-bold text-white">분석 상세 결과</h1>
           <p className="text-gray-400 text-sm">ID: {record.id}</p>
         </div>
-        <div></div>
+        <div className="flex items-center space-x-2">
+          <button
+            onClick={handleRefresh}
+            className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
+            disabled={isLoading}
+          >
+            🔄 새로고침
+          </button>
+        </div>
       </div>
 
-      <div className="max-w-6xl mx-auto space-y-6">
-        {/* 기본 정보 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
-          <div className="flex items-center justify-between mb-4">
-            <div className="flex-1">
-              <h2 className="text-xl font-semibold text-white mb-2">{record.phoneNumber}</h2>
-              <div className="flex items-center space-x-4 text-sm text-gray-400 mb-2">
-                <span>📅 {record.callDate}</span>
-                <span>📞 {record.callDuration}</span>
-              </div>
-              <div className="flex items-center space-x-3">
-                <button 
-                  onClick={handleAudioPlay}
-                  className="flex items-center px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white text-sm rounded-lg transition-colors"
-                  disabled={isLoading}
-                >
-                  {isPlaying ? (
-                    <>⏸️ 일시정지</>
-                  ) : (
-                    <>▶️ 녹음 재생</>
-                  )}
-                </button>
-                <span className={`px-2 py-1 text-xs rounded-full ${getPhishingTypeColor(record.phishingType)}`}>
-                  {record.phishingType}
-                </span>
+      <div className="max-w-4xl mx-auto space-y-6">
+        {/* 상단 안내 메시지 */}
+        <div className="bg-blue-900 border border-blue-600 rounded-lg p-4">
+          <div className="flex items-center space-x-2">
+            <span className="text-blue-400">ℹ️</span>
+            <div>
+              <p className="text-blue-300 font-medium">UI 확인용 예시 데이터</p>
+              <p className="text-blue-400 text-sm">현재 백엔드 연결 없이 예시 데이터로 화면을 표시하고 있습니다.</p>
+            </div>
+          </div>
+        </div>
+        {/* 기본 정보 카드 */}
+        <div className="bg-gray-900 border border-gray-700 rounded-lg p-8">
+          <div className="flex items-center justify-between mb-6">
+            <div className="flex items-center space-x-4">
+              {getRiskIcon(record.risk)}
+              <div>
+                <h2 className="text-2xl font-bold text-white mb-2">{record.phoneNumber}</h2>
+                <div className="flex items-center space-x-6 text-gray-400">
+                  <div className="flex items-center space-x-2">
+                    <span>📅</span>
+                    <span>{record.callDate}</span>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <span>📞</span>
+                    <span>{record.callDuration}</span>
+                  </div>
+                </div>
               </div>
             </div>
             {getRiskBadge(record.riskPercentage, record.risk)}
           </div>
           
-          <div className="bg-gray-800 p-4 rounded-lg mb-4">
-            <h4 className="text-white text-sm font-medium mb-2">분류 원인:</h4>
-            <p className="text-gray-300 text-sm">{record.reason}</p>
+          {/* 보이스피싱 유형 */}
+          <div className="mb-6">
+            <span className="text-gray-400 text-sm mb-2 block">탐지된 유형:</span>
+            <span className={`px-3 py-2 text-sm rounded-lg ${getPhishingTypeColor(record.phishingType)}`}>
+              {record.phishingType}
+            </span>
           </div>
-          
-          {record.keywords.length > 0 && (
-            <div>
-              <span className="text-white text-sm mb-2 block">감지된 키워드:</span>
-              <div className="flex flex-wrap gap-2">
-                {record.keywords.map((keyword, index) => (
-                  <span key={index} className="px-2 py-1 bg-red-900 text-red-300 text-xs rounded-full">
-                    {keyword}
-                  </span>
-                ))}
+
+          {/* 오디오 재생 */}
+          <div className="mb-6">
+            <button 
+              onClick={handleAudioPlay}
+              className="flex items-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors space-x-2"
+              disabled={isLoading}
+            >
+              {isPlaying ? (
+                <>
+                  <span>⏸️</span>
+                  <span>일시정지</span>
+                </>
+              ) : (
+                <>
+                  <span>▶️</span>
+                  <span>녹음 재생</span>
+                </>
+              )}
+            </button>
+          </div>
+        </div>
+
+        {/* 분석 원인 */}
+        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">🔍 분석 결과</h3>
+          <div className="bg-gray-800 p-4 rounded-lg">
+            <p className="text-gray-300 leading-relaxed">{record.reason}</p>
+          </div>
+        </div>
+
+        {/* 위험도 상세 정보 */}
+        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-white mb-4">📊 위험도 분석</h3>
+          <div className="space-y-4">
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">위험도 점수</span>
+              <div className="flex items-center space-x-3">
+                <div className="w-32 bg-gray-700 rounded-full h-3">
+                  <div 
+                    className={`h-3 rounded-full ${record.risk === 'high' ? 'bg-red-500' : 'bg-yellow-500'}`}
+                    style={{ width: `${record.riskPercentage}%` }}
+                  ></div>
+                </div>
+                <span className="text-white font-semibold">{record.riskPercentage}%</span>
               </div>
             </div>
-          )}
-        </div>
-
-        {/* 통화 내용 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">📝 통화 내용</h3>
-          <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-300 leading-relaxed">{record.transcript}</p>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">위험 등급</span>
+              <span className={`px-3 py-1 rounded-full text-sm font-medium ${
+                record.risk === 'high' 
+                  ? 'bg-red-900 text-red-300' 
+                  : 'bg-yellow-900 text-yellow-300'
+              }`}>
+                {record.risk === 'high' ? '고위험' : '중위험'}
+              </span>
+            </div>
+            
+            <div className="flex items-center justify-between">
+              <span className="text-gray-400">통화 시간</span>
+              <span className="text-white">{record.callDuration}</span>
+            </div>
           </div>
         </div>
 
-        {/* 의심 구간 */}
+        {/* 안전 수칙 (정적 정보) */}
         <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">⚠️ 의심 구간 분석</h3>
-          <div className="space-y-4">
-            {record.suspiciousTimes.map((suspicion, index) => (
-              <div key={index} className="bg-gray-800 p-4 rounded-lg">
-                <div className="flex items-center justify-between mb-2">
-                  <div className="flex items-center space-x-2">
-                    <span className="text-white font-medium">
-                      {suspicion.startTime} - {suspicion.endTime}
-                    </span>
-                    {getSeverityBadge(suspicion.severity)}
-                  </div>
-                </div>
-                <p className="text-gray-300 text-sm">{suspicion.reason}</p>
-              </div>
-            ))}
+          <h3 className="text-lg font-semibold text-white mb-4">🛡️ 보이스피싱 예방 수칙</h3>
+          <div className="space-y-3">
+            <div className="flex items-start space-x-3 bg-gray-800 p-3 rounded-lg">
+              <span className="text-red-400 font-bold">1.</span>
+              <p className="text-gray-300 text-sm">금융기관이나 수사기관에서 전화로 개인정보를 요구하지 않습니다.</p>
+            </div>
+            <div className="flex items-start space-x-3 bg-gray-800 p-3 rounded-lg">
+              <span className="text-red-400 font-bold">2.</span>
+              <p className="text-gray-300 text-sm">의심스러운 전화는 즉시 끊고 해당 기관에 직접 확인하세요.</p>
+            </div>
+            <div className="flex items-start space-x-3 bg-gray-800 p-3 rounded-lg">
+              <span className="text-red-400 font-bold">3.</span>
+              <p className="text-gray-300 text-sm">계좌이체나 현금인출을 요구하면 112에 신고하세요.</p>
+            </div>
+            <div className="flex items-start space-x-3 bg-gray-800 p-3 rounded-lg">
+              <span className="text-red-400 font-bold">4.</span>
+              <p className="text-gray-300 text-sm">가족이나 지인에게 상황을 공유하고 조언을 구하세요.</p>
+            </div>
+          </div>
+        </div>
+
+        {/* 신고 안내 */}
+        <div className="bg-red-900 border border-red-600 rounded-lg p-6">
+          <h3 className="text-lg font-semibold text-red-300 mb-4">🚨 신고 안내</h3>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div className="bg-red-800 p-4 rounded-lg">
+              <h4 className="text-red-300 font-medium mb-2">긴급신고</h4>
+              <p className="text-red-200 text-2xl font-bold">112</p>
+              <p className="text-red-300 text-sm">경찰서 (24시간)</p>
+            </div>
+            <div className="bg-red-800 p-4 rounded-lg">
+              <h4 className="text-red-300 font-medium mb-2">피해신고</h4>
+              <p className="text-red-200 text-2xl font-bold">1332</p>
+              <p className="text-red-300 text-sm">금융감독원 (평일 9-18시)</p>
+            </div>
           </div>
         </div>
       </div>

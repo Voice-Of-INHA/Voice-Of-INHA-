@@ -22,97 +22,91 @@ export default function PastListPage() {
   const [filterRisk, setFilterRisk] = useState<'all' | 'high' | 'medium'>('all')
   const [isLoading, setIsLoading] = useState(true)
   const [showHelpModal, setShowHelpModal] = useState(false)
+  const [error, setError] = useState<string | null>(null)
 
-  // TODO: 실제 DB 연동 시 이 더미 데이터는 제거됩니다
-  const dummyData: AnalysisRecord[] = [
-    {
-      id: "1",
-      phoneNumber: "010-1234-5678",
-      callDate: "2024-08-16",
-      callDuration: "05:43", // 5분 43초
-      riskPercentage: 87,
-      phishingType: "계좌이체 사기",
-      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240816_143022.mp3",
-      risk: "high"
-    },
-    {
-      id: "2", 
-      phoneNumber: "02-9876-5432",
-      callDate: "2024-08-15",
-      callDuration: "02:11", // 2분 11초
-      riskPercentage: 64,
-      phishingType: "상금사기",
-      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240815_091533.wav",
-      risk: "medium"
-    },
-    {
-      id: "3",
-      phoneNumber: "070-1111-2222",
-      callDate: "2024-08-13", 
-      callDuration: "07:28", // 7분 28초
-      riskPercentage: 92,
-      phishingType: "수사기관 사칭",
-      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240813_114555.wav",
-      risk: "high"
-    },
-    {
-      id: "4",
-      phoneNumber: "010-7777-8888",
-      callDate: "2024-08-12",
-      callDuration: "03:17", // 3분 17초
-      riskPercentage: 71,
-      phishingType: "불법대출",
-      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240812_203344.mp3",
-      risk: "medium"
-    },
-    {
-      id: "5",
-      phoneNumber: "010-8888-9999",
-      callDate: "2024-08-11",
-      callDuration: "06:12", // 6분 12초
-      riskPercentage: 89,
-      phishingType: "협박사기",
-      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240811_131208.wav",
-      risk: "high"
-    },
-    {
-      id: "6",
-      phoneNumber: "02-5555-6666",
-      callDate: "2024-08-10",
-      callDuration: "04:33", // 4분 33초
-      riskPercentage: 58,
-      phishingType: "택배사기",
-      audioFileUrl: "http://127.0.0.1:3000/audio/call_20240810_145520.mp3",
-      risk: "medium"
+  // 백엔드에서 분석 이력 데이터 가져오기
+  const loadAnalysisRecords = async () => {
+    setIsLoading(true)
+    setError(null)
+    
+    try {
+      console.log("📋 분석 이력 조회 시작...")
+      
+      const response = await fetch('/api/proxy?path=list')
+      
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`서버 오류: ${response.status} - ${errorText}`)
+      }
+      
+      const data = await response.json()
+      console.log("✅ 분석 이력 조회 성공:", data)
+      
+      // 백엔드 데이터 형식에 맞춰 변환
+      const formattedRecords: AnalysisRecord[] = data.map((item: any) => ({
+        id: item.id || item._id || `${Date.now()}-${Math.random()}`,
+        phoneNumber: item.phoneNumber || item.phone_number || "알 수 없음",
+        callDate: item.callDate || item.call_date || item.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+        callDuration: item.callDuration || item.call_duration || item.duration || "00:00",
+        riskPercentage: item.riskPercentage || item.risk_percentage || item.risk_score || 0,
+        phishingType: item.phishingType || item.phishing_type || item.analysis_type || "분석 중",
+        audioFileUrl: item.audioFileUrl || item.audio_file_url || item.file_path || "",
+        risk: (item.riskPercentage || item.risk_percentage || item.risk_score || 0) >= 70 ? 'high' : 'medium'
+      }))
+      
+      setRecords(formattedRecords)
+      setFilteredRecords(formattedRecords)
+      
+    } catch (error) {
+      console.error("❌ 분석 이력 조회 실패:", error)
+      setError(error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다")
+      
+      // 개발용 더미 데이터 (백엔드 연결 실패 시)
+      const dummyData: AnalysisRecord[] = [
+        {
+          id: "1",
+          phoneNumber: "010-1234-5678",
+          callDate: "2024-08-16",
+          callDuration: "05:43",
+          riskPercentage: 87,
+          phishingType: "계좌이체 사기",
+          audioFileUrl: "/api/proxy?path=audio&id=1",
+          risk: "high"
+        },
+        {
+          id: "2", 
+          phoneNumber: "02-9876-5432",
+          callDate: "2024-08-15",
+          callDuration: "02:11",
+          riskPercentage: 64,
+          phishingType: "상금사기",
+          audioFileUrl: "/api/proxy?path=audio&id=2",
+          risk: "medium"
+        },
+        {
+          id: "3",
+          phoneNumber: "070-1111-2222",
+          callDate: "2024-08-13", 
+          callDuration: "07:28",
+          riskPercentage: 92,
+          phishingType: "수사기관 사칭",
+          audioFileUrl: "/api/proxy?path=audio&id=3",
+          risk: "high"
+        }
+      ]
+      
+      console.log("⚠️ 백엔드 연결 실패로 더미 데이터 사용")
+      setRecords(dummyData)
+      setFilteredRecords(dummyData)
+      
+    } finally {
+      setIsLoading(false)
     }
-  ]
+  }
 
   useEffect(() => {
-    // TODO: 실제 환경에서는 이 부분이 실제 API 호출로 대체됩니다
-    const loadData = async () => {
-      setIsLoading(true)
-      
-      try {
-        // 실제 API 호출 예시 (현재는 주석 처리)
-        // const response = await fetch('/api/call-records');
-        // const data = await response.json();
-        // setRecords(data);
-        // setFilteredRecords(data);
-        
-        // 현재는 더미 데이터 사용 (개발용)
-        setTimeout(() => {
-          setRecords(dummyData)
-          setFilteredRecords(dummyData)
-          setIsLoading(false)
-        }, 1000)
-      } catch (error) {
-        console.error('Failed to fetch records:', error)
-        setIsLoading(false)
-      }
-    }
-    
-    loadData()
-  }, []) // dummyData는 상수이므로 의존성에 포함하지 않음
+    loadAnalysisRecords()
+  }, [])
 
   useEffect(() => {
     let filtered = records
@@ -157,6 +151,10 @@ export default function PastListPage() {
     return 'bg-yellow-900 text-yellow-300'
   }
 
+  const handleRefresh = () => {
+    loadAnalysisRecords()
+  }
+
   return (
     <div className="min-h-screen bg-black p-4">
       {/* 헤더 */}
@@ -175,6 +173,14 @@ export default function PastListPage() {
           >
             ❓ 도움말
           </button>
+
+          <button
+            className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
+            onClick={handleRefresh}
+            disabled={isLoading}
+          >
+            🔄 새로고침
+          </button>
         </div>
       </div>
 
@@ -182,6 +188,25 @@ export default function PastListPage() {
         <h1 className="text-3xl font-bold text-white mb-8 text-center">
           과거 분석 이력
         </h1>
+
+        {/* 오류 메시지 */}
+        {error && (
+          <div className="mb-6 p-4 bg-red-900 border border-red-600 rounded-lg">
+            <div className="flex items-center space-x-2">
+              <span className="text-red-400">⚠️</span>
+              <div>
+                <p className="text-red-300 font-medium">데이터 로드 오류</p>
+                <p className="text-red-400 text-sm">{error}</p>
+                <button 
+                  onClick={handleRefresh}
+                  className="mt-2 px-3 py-1 bg-red-600 hover:bg-red-700 text-white text-sm rounded transition-colors"
+                >
+                  다시 시도
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
 
         {/* 검색 및 필터 */}
         <div className="mb-6 flex flex-col sm:flex-row gap-4">
@@ -238,10 +263,12 @@ export default function PastListPage() {
         )}
 
         {/* 결과 없음 */}
-        {!isLoading && filteredRecords.length === 0 && (
+        {!isLoading && filteredRecords.length === 0 && !error && (
           <div className="text-center py-12">
             <div className="text-6xl text-gray-400 mb-4">🛡️</div>
-            <p className="text-gray-400 text-lg">검색 결과가 없습니다.</p>
+            <p className="text-gray-400 text-lg">
+              {records.length === 0 ? "아직 분석된 통화가 없습니다." : "검색 결과가 없습니다."}
+            </p>
           </div>
         )}
 

@@ -2,8 +2,12 @@
 
 import { useState, useRef, useEffect } from "react"
 import HelpModal from "../components/modals/HelpModal"
+import AnalysisControlPanel from "./panels/AnalysisControlPanel"
+import RiskStatusPanel from "./panels/RiskStatusPanel"
+import AnalysisLogPanel from "./panels/AnalysisLogPanel"
+import SaveCallModal from "./panels/SaveCallModal"
 
-// Safari와 구형 브라우저 지원을 위한 타입 확장
+// Safari 구형 브라우저 지원을 위한 타입 확장
 declare global {
   interface Window {
     webkitAudioContext?: typeof AudioContext
@@ -31,12 +35,11 @@ interface BackendMessage {
   risk_level?: 'low' | 'medium' | 'high'
   analysis_reason?: string
   detected_keywords?: string[]
-  // 에러 메시지를 위한 다양한 필드들
   message?: string
   error?: string
   detail?: string
   description?: string
-  [key: string]: unknown // 추가적인 필드들을 위해
+  [key: string]: unknown
 }
 
 export default function AnalysisPage() {
@@ -76,7 +79,7 @@ export default function AnalysisPage() {
   const recordedChunksRef = useRef<Blob[]>([])
 
   // 환경 설정
-  const WS_URL = "ws://localhost:8000/ws/analysis"
+  const WS_URL = "ws://174.44.164.18:8000/ws/analysis"
   const CHUNK_MS = 500
   const TARGET_SR = 16000
 
@@ -85,6 +88,22 @@ export default function AnalysisPage() {
     console.log(`[${variant}] ${title}: ${description}`)
     if (variant === 'destructive') {
       alert(`오류: ${description}`)
+    }
+  }
+
+  // 백엔드 상태 체크 함수
+  const checkBackendStatus = async (): Promise<boolean> => {
+    try {
+      const response = await fetch('/api/proxy?checkStatus=true')
+      if (response.ok) {
+        const data = await response.json()
+        console.log("✅ 백엔드 상태 확인:", data)
+        return true
+      }
+      return false
+    } catch (error) {
+      console.error("❌ 백엔드 상태 체크 실패:", error)
+      return false
     }
   }
 
@@ -187,13 +206,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 시간 포맷팅 함수
-  const formatTime = (seconds: number) => {
-    const mins = Math.floor(seconds / 60)
-    const secs = seconds % 60
-    return `${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`
-  }
-
   // WebSocket 초기화
   const initializeWebSocket = (): Promise<WebSocket> => {
     return new Promise((resolve, reject) => {
@@ -216,30 +228,25 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           if (msg.type === "analysis_update") {
             let logText = ""
             
-            // 세그먼트가 있으면 화자별로 표시
             if (msg.segments && Array.isArray(msg.segments) && msg.segments.length > 0) {
               const lines = msg.segments.map(s => `[SPK${s.speaker}] ${s.text || ""}`)
               logText = `${msg.is_final ? '[FINAL]' : '[PART]'} ${lines.join(' | ')}`
             } else {
-              // 단일 화자 또는 세그먼트 없음
               const spk = (msg.speaker !== undefined && msg.speaker !== null) ? `[SPK${msg.speaker}] ` : ""
               logText = `${msg.is_final ? '[FINAL]' : '[PART]'} ${spk}${msg.transcript || ""}`
             }
             
-            // 위험도 정보가 있으면 추가
             if (msg.risk_score !== undefined) {
               logText += ` [위험도: ${msg.risk_score}%]`
             }
             
             setAnalysisLog(prev => prev + logText + '\n')
             
-            // 최종 분석 결과 처리
             if (msg.is_final && msg.risk_score !== undefined) {
               updateAnalysisResult(msg)
             }
           } else if (msg.type === "error") {
             console.error("백엔드 오류:", msg)
-            // 다양한 에러 메시지 필드를 확인
             const errorMessage = msg.message || msg.error || msg.detail || msg.description || '알 수 없는 오류'
             setAnalysisLog(prev => prev + `ERROR: ${errorMessage}\n`)
           }
@@ -275,13 +282,12 @@ registerProcessor('resampler-processor', ResamplerProcessor);
   const updateAnalysisResult = (msg: BackendMessage) => {
     if (msg.risk_score === undefined) return
 
-    // 현재 위험도와 새로운 위험도 중 높은 값 사용 (누적)
     const newRiskScore = Math.max(analysisResult.riskScore, msg.risk_score)
     
     const newResult: AnalysisResult = {
       risk: msg.risk_level || getRiskLevel(newRiskScore),
       riskScore: Math.round(newRiskScore),
-      keywords: [...new Set([...analysisResult.keywords, ...(msg.detected_keywords || [])])], // 중복 제거하여 누적
+      keywords: [...new Set([...analysisResult.keywords, ...(msg.detected_keywords || [])])],
       reason: msg.analysis_reason || analysisResult.reason,
       timestamp: Date.now()
     }
@@ -305,18 +311,15 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       
       streamRef.current = stream
 
-      // AudioContext 및 분석기 설정
       const AudioContextClass = window.AudioContext || window.webkitAudioContext || AudioContext
       audioContextRef.current = new AudioContextClass({ sampleRate: 48000 })
       
-      // 오디오 레벨 측정용
       analyserRef.current = audioContextRef.current.createAnalyser()
       analyserRef.current.fftSize = 256
       analyserRef.current.smoothingTimeConstant = 0.8
       
       const source = audioContextRef.current.createMediaStreamSource(stream)
       
-      // Worklet 설정 (실시간 분석용)
       const blobURL = buildWorkletBlobURL()
       await audioContextRef.current.audioWorklet.addModule(blobURL)
       
@@ -326,11 +329,10 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       workletNode.port.onmessage = (ev) => {
         const d = ev.data
         if (d && d.type === "chunk" && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          socketRef.current.send(d.pcm16) // 16kHz mono Int16 PCM을 백엔드로 전송
+          socketRef.current.send(d.pcm16)
         }
       }
       
-      // 연결: source -> [analyser, worklet] -> destination
       source.connect(analyserRef.current)
       source.connect(workletNode)
       workletNode.connect(audioContextRef.current.destination)
@@ -387,7 +389,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       setIsActive(true)
       setAnalysisLog('')
       
-      // 초기 분석 결과 리셋
       setAnalysisResult({
         risk: null,
         riskScore: 0,
@@ -395,8 +396,13 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         reason: '',
         timestamp: 0
       })
+
+      // 백엔드 상태 먼저 체크
+      const backendOk = await checkBackendStatus()
+      if (!backendOk) {
+        throw new Error("백엔드 서버에 연결할 수 없습니다.")
+      }
       
-      // WebSocket 연결 (반환값은 ref에 저장되므로 직접 사용하지 않음)
       await initializeWebSocket()
       const stream = await initializeAudioStream()
       const mediaRecorder = initializeMediaRecorder(stream)
@@ -423,36 +429,30 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     
     const finalRiskScore = analysisResult.riskScore
     
-    // MediaRecorder 중지
     if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
       mediaRecorderRef.current.stop()
     }
 
-    // Worklet 정리
     if (workletNodeRef.current) {
       try { workletNodeRef.current.disconnect() } catch {}
       workletNodeRef.current = null
     }
     
-    // AudioContext 정리
     if (audioContextRef.current) {
       try { audioContextRef.current.close() } catch {}
       audioContextRef.current = null
     }
     
-    // 스트림 정리
     if (streamRef.current) {
       streamRef.current.getTracks().forEach(track => track.stop())
       streamRef.current = null
     }
     
-    // WebSocket 정리
     if (socketRef.current) {
       try { socketRef.current.close() } catch {}
       socketRef.current = null
     }
 
-    // 애니메이션 프레임 정리
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current)
       animationFrameRef.current = null
@@ -463,7 +463,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     setConnectionStatus('disconnected')
     setAudioLevel(0)
     
-    // 위험도에 따른 후처리
     if (finalRiskScore >= 50) {
       setShowSaveModal(true)
     } else {
@@ -472,7 +471,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 통화 저장 함수
+  // 통화 저장 함수 (API route 사용)
   const saveCall = async () => {
     if (!phoneNumber.trim()) {
       showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
@@ -490,18 +489,20 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       formData.append('audioFile', recordedBlob, `suspicious_call_${Date.now()}.webm`)
       formData.append('phoneNumber', phoneNumber.trim())
 
-      const response = await fetch('/api/save-suspicious-call', {
+      console.log("📤 의심 통화 저장 시작:", phoneNumber.trim())
+
+      const response = await fetch('/api/proxy', {
         method: 'POST',
         body: formData
       })
 
       if (!response.ok) {
-        const errorData = await response.json().catch(() => ({}))
-        throw new Error(`업로드 실패: ${response.status} - ${errorData.message || response.statusText}`)
+        const errorText = await response.text()
+        throw new Error(`업로드 실패: ${response.status} - ${errorText}`)
       }
 
-      const result = await response.json()
-      console.log("의심 통화 저장 성공:", result)
+      const result = await response.text()
+      console.log("✅ 의심 통화 저장 성공:", result)
 
       showToast("저장 완료", "의심 통화가 성공적으로 저장되었습니다.")
       
@@ -510,7 +511,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       setShowSaveModal(false)
 
     } catch (error) {
-      console.error("저장 실패:", error)
+      console.error("❌ 저장 실패:", error)
       showToast("저장 실패", "의심 통화 저장 중 오류가 발생했습니다.", "destructive")
     } finally {
       setIsSaving(false)
@@ -525,70 +526,36 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     showToast("저장 건너뛰기", "녹음 데이터가 삭제되었습니다.")
   }
 
-  // 위험도별 색상
-  const getRiskColor = (risk: string | null) => {
-    switch (risk) {
-      case 'high': return 'text-red-500'
-      case 'medium': return 'text-yellow-500'  
-      case 'low': return 'text-green-500'
-      default: return 'text-gray-500'
-    }
-  }
-
-  // 위험도별 배경색
-  const getRiskBgColor = (score: number) => {
-    if (score >= 70) return 'bg-red-900 border-red-500'
-    if (score >= 50) return 'bg-yellow-900 border-yellow-500'
-    return 'bg-gray-800 border-gray-700'
-  }
-
-  // 위험도별 아이콘
-  const getRiskIcon = (risk: string | null) => {
-    switch (risk) {
-      case 'high': return <span className="text-red-500 text-2xl">🚨</span>
-      case 'medium': return <span className="text-yellow-500 text-2xl">⚠️</span>
-      case 'low': return <span className="text-green-500 text-2xl">✅</span>
-      default: return <span className="text-gray-400 text-2xl">🛡️</span>
-    }
-  }
-
   // 컴포넌트 언마운트 시 정리
   useEffect(() => {
     return () => {
       if (isActive) {
-        // 정리 함수를 직접 호출
         console.log("분석 중지")
         
-        // MediaRecorder 중지
         if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
           mediaRecorderRef.current.stop()
         }
 
-        // Worklet 정리
         if (workletNodeRef.current) {
           try { workletNodeRef.current.disconnect() } catch {}
           workletNodeRef.current = null
         }
         
-        // AudioContext 정리
         if (audioContextRef.current) {
           try { audioContextRef.current.close() } catch {}
           audioContextRef.current = null
         }
         
-        // 스트림 정리
         if (streamRef.current) {
           streamRef.current.getTracks().forEach(track => track.stop())
           streamRef.current = null
         }
         
-        // WebSocket 정리
         if (socketRef.current) {
           try { socketRef.current.close() } catch {}
           socketRef.current = null
         }
 
-        // 애니메이션 프레임 정리
         if (animationFrameRef.current) {
           cancelAnimationFrame(animationFrameRef.current)
           animationFrameRef.current = null
@@ -602,219 +569,74 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }, [isActive])
 
-return (
-  <div className="min-h-screen bg-black flex flex-col p-4">
-    {/* 헤더 */}
-    <div className="flex items-center justify-between mb-6">
-      <div className="flex items-center space-x-4">
-        <button
-          className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
-          onClick={() => window.history.back()}
-        >
-          ← 돌아가기
-        </button>
+  return (
+    <div className="min-h-screen bg-black flex flex-col p-4">
+      {/* 헤더 */}
+      <div className="flex items-center justify-between mb-6">
+        <div className="flex items-center space-x-4">
+          <button
+            className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
+            onClick={() => window.history.back()}
+          >
+            ← 돌아가기
+          </button>
 
-        <button
-          className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
-          onClick={() => setShowHelpModal(true)}
-        >
-          ❓ 도움말
-        </button>
+          <button
+            className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
+            onClick={() => setShowHelpModal(true)}
+          >
+            ❓ 도움말
+          </button>
+        </div>
       </div>
+
+      <div className="flex-1 flex flex-col items-center justify-center max-w-6xl mx-auto w-full">
+        <h1 className="text-3xl font-bold text-white mb-8 text-center">
+          실시간 보이스피싱 분석 시스템
+        </h1>
+
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full mb-6">
+          {/* 메인 컨트롤 */}
+          <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
+            <div className="p-6">
+              <AnalysisControlPanel
+                isActive={isActive}
+                connectionStatus={connectionStatus}
+                recordingTime={recordingTime}
+                audioLevel={audioLevel}
+                onStartAnalysis={startAnalysis}
+                onStopAnalysis={stopAnalysis}
+              />
+              
+              <RiskStatusPanel
+                analysisResult={analysisResult}
+                isActive={isActive}
+                connectionStatus={connectionStatus}
+              />
+            </div>
+          </div>
+
+          {/* 분석 로그 */}
+          <AnalysisLogPanel analysisLog={analysisLog} />
+        </div>
+      </div>
+
+      {/* 도움말 모달 */}
+      <HelpModal 
+        isOpen={showHelpModal} 
+        onClose={() => setShowHelpModal(false)} 
+      />
+
+      {/* 저장 모달 */}
+      <SaveCallModal
+        isOpen={showSaveModal}
+        analysisResult={analysisResult}
+        phoneNumber={phoneNumber}
+        isSaving={isSaving}
+        onPhoneNumberChange={setPhoneNumber}
+        onSave={saveCall}
+        onSkip={skipSave}
+      />
     </div>
-
-    <div className="flex-1 flex flex-col items-center justify-center max-w-6xl mx-auto w-full">
-      <h1 className="text-3xl font-bold text-white mb-8 text-center">
-        실시간 보이스피싱 분석 시스템
-      </h1>
-
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 w-full mb-6">
-        {/* 메인 컨트롤 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
-          <div className="p-6">
-            <h2 className="text-xl font-semibold text-white mb-4">통화 분석 및 녹음</h2>
-
-            <div className="text-center mb-4">
-              <button
-                onClick={isActive ? stopAnalysis : startAnalysis}
-                disabled={connectionStatus === 'connecting'}
-                className={`w-32 h-32 rounded-full text-white font-semibold shadow-lg transition-all duration-200 ${
-                  connectionStatus === 'connecting'
-                    ? 'bg-gray-600 cursor-not-allowed opacity-50'
-                    : isActive
-                    ? 'bg-red-600 hover:bg-red-700 animate-pulse'
-                    : 'bg-blue-600 hover:bg-blue-700'
-                }`}
-              >
-                {connectionStatus === 'connecting' ? (
-                  <div className="flex flex-col items-center">
-                    <span className="text-3xl mb-2">🔄</span>
-                    <span className="text-sm">연결중</span>
-                  </div>
-                ) : isActive ? (
-                  <div className="flex flex-col items-center">
-                    <span className="text-3xl mb-2">⏹️</span>
-                    <span className="text-sm">분석 중지</span>
-                  </div>
-                ) : (
-                  <div className="flex flex-col items-center">
-                    <span className="text-3xl mb-2">🎙️</span>
-                    <span className="text-sm">분석 시작</span>
-                  </div>
-                )}
-              </button>
-            </div>
-
-            {isActive && (
-              <>
-                <div className="mb-4 text-center">
-                  <p className="text-white text-lg font-mono">{formatTime(recordingTime)}</p>
-                  <p className="text-gray-400 text-xs">분석 시간</p>
-                </div>
-
-                <div className="mt-4">
-                  <p className="text-white text-sm mb-2">음성 레벨 ({audioLevel}%)</p>
-                  <div className="w-full bg-gray-700 rounded-full h-3">
-                    <div
-                      className={`h-3 rounded-full transition-all duration-100 ${
-                        audioLevel > 70 ? 'bg-red-500' : audioLevel > 30 ? 'bg-yellow-500' : 'bg-green-500'
-                      }`}
-                      style={{ width: `${Math.min(audioLevel, 100)}%` }}
-                    />
-                  </div>
-                  <p className="text-gray-400 text-xs mt-1">🔴 분석 중...</p>
-                </div>
-              </>
-            )}
-
-            <div className="bg-gray-800 rounded p-3 h-32 overflow-y-auto mt-4">
-              <pre className="text-xs text-gray-300 whitespace-pre-wrap">
-                {analysisLog || '분석 결과가 여기에 표시됩니다...'}
-              </pre>
-            </div>
-          </div>
-        </div>
-
-        {/* 분석 결과 */}
-        <div className={`border rounded-lg shadow-lg transition-all duration-300 ${getRiskBgColor(analysisResult.riskScore)}`}>
-          <div className="p-6">
-            <h2 className="text-xl font-semibold text-white mb-4">실시간 위험도 분석</h2>
-
-            <div className="space-y-4">
-              {/* 위험도 점수 */}
-              <div className="flex items-center justify-between p-3 bg-gray-800 rounded-lg">
-                <div className="flex items-center">
-                  {getRiskIcon(analysisResult.risk)}
-                  <span className="text-white ml-2">위험도</span>
-                </div>
-                <div className="text-right">
-                  <span className={`font-bold text-2xl ${getRiskColor(analysisResult.risk)}`}>
-                    {analysisResult.riskScore}
-                  </span>
-                  <span className="text-gray-400 text-sm ml-1">/100</span>
-                </div>
-              </div>
-
-              {/* 판단 이유 */}
-              {analysisResult.reason && (
-                <div className="p-3 bg-gray-800 rounded-lg">
-                  <span className="text-white block mb-1">AI 분석 결과</span>
-                  <p className="text-gray-300 text-sm">{analysisResult.reason}</p>
-                </div>
-              )}
-
-              {/* 감지된 키워드 */}
-              {analysisResult.keywords.length > 0 && (
-                <div className="p-3 bg-gray-800 rounded-lg">
-                  <span className="text-white block mb-2">감지된 위험 키워드</span>
-                  <div className="flex flex-wrap gap-2">
-                    {analysisResult.keywords.map((keyword, index) => (
-                      <span key={index} className="px-2 py-1 bg-red-600 text-white text-xs rounded-full">
-                        {keyword}
-                      </span>
-                    ))}
-                  </div>
-                </div>
-              )}
-
-              {/* 상태 표시 */}
-              <div className="p-3 bg-gray-800 rounded-lg">
-                <span className="text-white block mb-1">시스템 상태</span>
-                <div className="flex items-center justify-between text-sm">
-                  <span className="text-gray-300">실시간 분석</span>
-                  <span className={isActive ? 'text-green-400' : 'text-gray-500'}>
-                    {isActive ? '활성' : '비활성'}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-        {/* /분석 결과 카드 */}
-      </div>
-      {/* /grid */}
-    </div>
-    {/* /flex-1 컨테이너 */}
-
-    {/* 도움말 모달 */}
-    <HelpModal 
-      isOpen={showHelpModal} 
-      onClose={() => setShowHelpModal(false)} 
-    />
-
-    {/* 저장 모달 */}
-    {showSaveModal && (
-      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-        <div className="bg-gray-900 p-6 rounded-lg shadow-xl max-w-md w-full mx-4 border border-gray-700">
-          <h3 className="text-xl font-bold text-white mb-4">위험 통화 감지</h3>
-          <p className="text-gray-300 mb-4">
-            위험도가 {analysisResult.riskScore}%로 보이스피싱 의심 통화입니다. 전화번호를 입력하시면 증거용 녹음 파일이 저장됩니다.
-          </p>
-
-          {/* 분석 요약 */}
-          <div className="bg-gray-800 p-3 rounded mb-4">
-            <h4 className="text-white text-sm font-semibold mb-2">분석 요약</h4>
-            <div className="text-xs text-gray-300 space-y-1">
-              <div>
-                위험도:{' '}
-                <span className={getRiskColor(analysisResult.risk)}>{analysisResult.riskScore}%</span>
-              </div>
-              {analysisResult.keywords.length > 0 && <div>키워드: {analysisResult.keywords.join(', ')}</div>}
-              {analysisResult.reason && <div>사유: {analysisResult.reason}</div>}
-            </div>
-          </div>
-
-          <div className="mb-4">
-            <label className="block text-white text-sm mb-2">상대방 전화번호</label>
-            <input
-              type="tel"
-              value={phoneNumber}
-              onChange={(e) => setPhoneNumber(e.target.value)}
-              placeholder="010-1234-5678"
-              className="w-full p-3 bg-gray-800 text-white rounded-lg border border-gray-600 focus:border-blue-500 focus:outline-none"
-              disabled={isSaving}
-            />
-          </div>
-
-          <div className="flex space-x-3">
-            <button
-              onClick={saveCall}
-              disabled={isSaving}
-              className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              {isSaving ? '저장 중...' : '위험 통화 저장'}
-            </button>
-            <button
-              onClick={skipSave}
-              disabled={isSaving}
-              className="flex-1 bg-gray-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-gray-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-            >
-              삭제
-            </button>
-          </div>
-        </div>
-      </div>
-    )}
-  </div>
-)
+  )
 }
