@@ -36,7 +36,7 @@ interface BackendMessage {
   error?: string
   detail?: string
   description?: string
-  [key: string]: any // 추가적인 필드들을 위해
+  [key: string]: unknown // 추가적인 필드들을 위해
 }
 
 export default function AnalysisPage() {
@@ -396,7 +396,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         timestamp: 0
       })
       
-      const socket = await initializeWebSocket()
+      const _socket = await initializeWebSocket()
       const stream = await initializeAudioStream()
       const mediaRecorder = initializeMediaRecorder(stream)
       
@@ -554,9 +554,52 @@ registerProcessor('resampler-processor', ResamplerProcessor);
   // 컴포넌트 언마운트 시 정리
   useEffect(() => {
     return () => {
-      if (isActive) stopAnalysis()
+      if (isActive) {
+        // 정리 함수를 직접 호출
+        console.log("분석 중지")
+        
+        // MediaRecorder 중지
+        if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+          mediaRecorderRef.current.stop()
+        }
+
+        // Worklet 정리
+        if (workletNodeRef.current) {
+          try { workletNodeRef.current.disconnect() } catch {}
+          workletNodeRef.current = null
+        }
+        
+        // AudioContext 정리
+        if (audioContextRef.current) {
+          try { audioContextRef.current.close() } catch {}
+          audioContextRef.current = null
+        }
+        
+        // 스트림 정리
+        if (streamRef.current) {
+          streamRef.current.getTracks().forEach(track => track.stop())
+          streamRef.current = null
+        }
+        
+        // WebSocket 정리
+        if (socketRef.current) {
+          try { socketRef.current.close() } catch {}
+          socketRef.current = null
+        }
+
+        // 애니메이션 프레임 정리
+        if (animationFrameRef.current) {
+          cancelAnimationFrame(animationFrameRef.current)
+          animationFrameRef.current = null
+        }
+
+        if (recordingTimerRef.current) {
+          clearInterval(recordingTimerRef.current)
+          recordingTimerRef.current = null
+        }
+      }
     }
-  }, [])
+  }, [isActive])
 
 return (
   <div className="min-h-screen bg-black flex flex-col p-4">
@@ -716,7 +759,6 @@ return (
     <HelpModal 
       isOpen={showHelpModal} 
       onClose={() => setShowHelpModal(false)} 
-      initialPage="analysis"
     />
 
     {/* 저장 모달 */}
