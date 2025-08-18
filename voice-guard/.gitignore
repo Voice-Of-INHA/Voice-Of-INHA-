@@ -1,0 +1,12 @@
+# Google Cloud Key
+keys/gcp-stt-key.json
+
+# Environment variables
+.env
+
+# Python venv (가상환경)
+venv/
+
+# Python cache
+__pycache__/
+*.pyc
