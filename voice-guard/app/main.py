@@ -1,5 +1,5 @@
 # app/main.py
-import os, base64
+import os
 from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
@@ -9,12 +9,6 @@ from .config import settings
 from .db import Base, engine
 from .routers import call_logs, uploads, realtime, voice_guard
 
-if "GCP_KEY_BASE64" in os.environ:
-    key_content = base64.b64decode(os.environ["GCP_KEY_BASE64"]).decode("utf-8")
-    os.makedirs("/app/keys", exist_ok=True)
-    with open("/app/keys/gcp-stt-key.json", "w") as f:
-        f.write(key_content)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/keys/gcp-stt-key.json"
 
 # DB 모델 자동생성
 Base.metadata.create_all(bind=engine)
