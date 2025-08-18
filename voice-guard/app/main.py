@@ -1,5 +1,6 @@
 # app/main.py
 import os
+from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -12,6 +13,18 @@ from .routers import call_logs, uploads, realtime, voice_guard
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="VoiceGuard API - 통합 시스템")
+
+# 👇 여기부터 붙여넣기
+SERVE_STATIC = os.getenv("SERVE_STATIC", "false").lower() == "true"
+
+BASE_DIR = Path(__file__).resolve().parent      # .../project-root/app
+ROOT_DIR = BASE_DIR.parent                      # .../project-root
+static_dir = (ROOT_DIR / "static").resolve()    # .../project-root/static
+
+if SERVE_STATIC and static_dir.is_dir():
+    from fastapi.staticfiles import StaticFiles
+    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
+# 👆 여기까지
 
 # CORS: 프론트 로컬 개발 주소 허용
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
