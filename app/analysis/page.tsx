@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useRef, useEffect } from "react"
+import HelpModal from "../components/modals/HelpModal"
 
 // Safari와 구형 브라우저 지원을 위한 타입 확장
 declare global {
@@ -550,9 +551,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 연결 상태별 표시 (제거된 함수)
-  // const getConnectionStatusDisplay = () => { ... }
-
   // 컴포넌트 언마운트 시 정리
   useEffect(() => {
     return () => {
@@ -715,52 +713,11 @@ return (
     {/* /flex-1 컨테이너 */}
 
     {/* 도움말 모달 */}
-    {showHelpModal && (
-      <div className="fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50">
-        <div className="bg-gray-900 p-6 rounded-lg shadow-xl max-w-lg w-full mx-4 border border-gray-700">
-          <h3 className="text-xl font-bold text-white mb-4">🛡️ 보이스피싱 분석 시스템 도움말</h3>
-
-          <div className="space-y-4 text-gray-300 text-sm">
-            <div>
-              <h4 className="text-white font-semibold mb-2">🎯 시스템 작동 방식</h4>
-              <ul className="space-y-1 ml-4">
-                <li>• 실시간으로 통화 내용을 분석하여 보이스피싱 위험도를 판단합니다</li>
-                <li>• AI가 음성을 텍스트로 변환하고 의심스러운 패턴을 감지합니다</li>
-                <li>• 위험도가 50% 이상이면 자동으로 녹음 파일을 보관합니다</li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="text-white font-semibold mb-2">🚨 주의사항</h4>
-              <ul className="space-y-1 ml-4">
-                <li>• 다음과 같은 키워드가 나오면 즉시 의심하세요:</li>
-                <li className="ml-4 text-red-400">- 안전계좌, 보호계좌, 명의도용</li>
-                <li className="ml-4 text-red-400">- 경찰청, 검찰청, 금융감독원</li>
-                <li className="ml-4 text-red-400">- 계좌이체, 현금인출, OTP 번호</li>
-                <li>• 공공기관은 절대 전화로 계좌이체를 요구하지 않습니다</li>
-              </ul>
-            </div>
-
-            <div>
-              <h4 className="text-white font-semibold mb-2">📱 사용법</h4>
-              <ul className="space-y-1 ml-4">
-                <li>• 의심스러운 전화가 올 때 '분석 시작' 버튼을 누르세요</li>
-                <li>• 통화가 끝나면 '분석 중지' 버튼을 누르세요</li>
-                <li>• 위험도가 높으면 자동으로 저장 창이 나타납니다</li>
-                <li>• 상대방 전화번호를 입력하고 저장하면 신고에 활용할 수 있습니다</li>
-              </ul>
-            </div>
-          </div>
-
-          <button
-            onClick={() => setShowHelpModal(false)}
-            className="w-full mt-6 bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
-          >
-            확인
-          </button>
-        </div>
-      </div>
-    )}
+    <HelpModal 
+      isOpen={showHelpModal} 
+      onClose={() => setShowHelpModal(false)} 
+      initialPage="analysis"
+    />
 
     {/* 저장 모달 */}
     {showSaveModal && (

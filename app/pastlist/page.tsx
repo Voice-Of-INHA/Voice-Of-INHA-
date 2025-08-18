@@ -1,6 +1,7 @@
 "use client"
 
 import { useState, useEffect } from "react"
+import HelpModal from "../components/modals/HelpModal"
 
 interface AnalysisRecord {
   id: string
@@ -20,8 +21,9 @@ export default function PastListPage() {
   const [searchTerm, setSearchTerm] = useState("")
   const [filterRisk, setFilterRisk] = useState<'all' | 'high' | 'medium'>('all')
   const [isLoading, setIsLoading] = useState(true)
+  const [showHelpModal, setShowHelpModal] = useState(false)
 
-  // 더미 데이터 (실제로는 DB에서 가져올 데이터)
+  // TODO: 실제 DB 연동 시 이 더미 데이터는 제거됩니다
   const dummyData: AnalysisRecord[] = [
     {
       id: "1",
@@ -86,26 +88,27 @@ export default function PastListPage() {
   ]
 
   useEffect(() => {
-    // 실제 환경에서는 API 호출
-    // const fetchRecords = async () => {
-    //   try {
-    //     const response = await fetch('/api/call-records');
-    //     const data = await response.json();
-    //     setRecords(data);
-    //     setFilteredRecords(data);
-    //   } catch (error) {
-    //     console.error('Failed to fetch records:', error);
-    //   }
-    // };
-    
+    // TODO: 실제 환경에서는 이 부분이 실제 API 호출로 대체됩니다
     const loadData = async () => {
       setIsLoading(true)
-      // API 호출 시뮬레이션
-      setTimeout(() => {
-        setRecords(dummyData)
-        setFilteredRecords(dummyData)
+      
+      try {
+        // 실제 API 호출 예시 (현재는 주석 처리)
+        // const response = await fetch('/api/call-records');
+        // const data = await response.json();
+        // setRecords(data);
+        // setFilteredRecords(data);
+        
+        // 현재는 더미 데이터 사용 (개발용)
+        setTimeout(() => {
+          setRecords(dummyData)
+          setFilteredRecords(dummyData)
+          setIsLoading(false)
+        }, 1000)
+      } catch (error) {
+        console.error('Failed to fetch records:', error)
         setIsLoading(false)
-      }, 1000)
+      }
     }
     
     loadData()
@@ -158,12 +161,19 @@ export default function PastListPage() {
     <div className="min-h-screen bg-black p-4">
       {/* 헤더 */}
       <div className="flex items-center justify-between mb-6">
-        <div className="flex items-center">
+        <div className="flex items-center space-x-4">
           <button 
             className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
             onClick={() => window.history.back()}
           >
             ← 돌아가기
+          </button>
+
+          <button
+            className="flex items-center text-white hover:text-gray-300 p-2 rounded-lg hover:bg-gray-800 transition-colors"
+            onClick={() => setShowHelpModal(true)}
+          >
+            ❓ 도움말
           </button>
         </div>
       </div>
@@ -307,6 +317,13 @@ export default function PastListPage() {
           </div>
         )}
       </div>
+
+      {/* 도움말 모달 */}
+      <HelpModal 
+        isOpen={showHelpModal} 
+        onClose={() => setShowHelpModal(false)} 
+        initialPage="pastlist"
+      />
     </div>
   )
 }
