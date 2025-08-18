@@ -79,7 +79,7 @@ export default function AnalysisPage() {
   const recordedChunksRef = useRef<Blob[]>([])
 
   // 환경 설정
-  const WS_URL = "ws://174.44.164.18:8000/ws/analysis"
+  const WS_URL = "wss://174.44.164.18:8000/wss/analysis"
   const CHUNK_MS = 500
   const TARGET_SR = 16000
 
