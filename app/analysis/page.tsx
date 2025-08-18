@@ -91,22 +91,6 @@ export default function AnalysisPage() {
     }
   }
 
-  // 백엔드 상태 체크 함수
-  const checkBackendStatus = async (): Promise<boolean> => {
-    try {
-      const response = await fetch('/api/proxy?checkStatus=true')
-      if (response.ok) {
-        const data = await response.json()
-        console.log("✅ 백엔드 상태 확인:", data)
-        return true
-      }
-      return false
-    } catch (error) {
-      console.error("❌ 백엔드 상태 체크 실패:", error)
-      return false
-    }
-  }
-
   // 위험도에 따른 리스크 레벨 계산
   const getRiskLevel = (score: number): 'low' | 'medium' | 'high' => {
     if (score >= 70) return 'high'
@@ -396,12 +380,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         reason: '',
         timestamp: 0
       })
-
-      // 백엔드 상태 먼저 체크
-      const backendOk = await checkBackendStatus()
-      if (!backendOk) {
-        throw new Error("백엔드 서버에 연결할 수 없습니다.")
-      }
       
       await initializeWebSocket()
       const stream = await initializeAudioStream()

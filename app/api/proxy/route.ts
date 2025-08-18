@@ -5,30 +5,7 @@ export async function GET(req: Request) {
   
   const path = searchParams.get("path")
   const id = searchParams.get("id")
-  const checkStatus = searchParams.get("checkStatus")
   const backendUrl = process.env.BACKEND_URL
-
-  // ✅ 백엔드 상태 체크 요청
-  if (checkStatus === "true") {
-    if (!backendUrl) {
-      return new Response("백엔드 URL이 설정되지 않았습니다", { status: 500 })
-    }
-        
-    try {
-      const res = await fetch(`${backendUrl}/status`, { 
-        method: "GET",
-        headers: {
-          "Content-Type": "application/json",
-        }
-      })
-      if (!res.ok) throw new Error(`상태 체크 응답 오류: ${res.status}`)
-      const data = await res.json()
-      return NextResponse.json(data)
-    } catch (err) {
-      console.error("❌ 백엔드 상태 체크 실패:", err)
-      return new Response("백엔드 서버에 연결할 수 없습니다", { status: 500 })
-    }
-  }
 
   // ✅ 분석 이력 목록 조회 (/list)
   if (path === "list") {
@@ -191,7 +168,7 @@ export async function POST(req: Request) {
           "Content-Type": "application/json",
         }
       })
-    } catch (parseError) {
+    } catch {
       // JSON 파싱 실패 시 텍스트 그대로 반환
       console.log("✅ 의심 통화 업로드 성공 (텍스트 응답):", responseText)
       
@@ -215,7 +192,7 @@ export async function POST(req: Request) {
 }
 
 // ✅ OPTIONS 메서드 처리 (CORS)
-export async function OPTIONS(req: Request) {
+export async function OPTIONS() {
   return new Response(null, {
     status: 200,
     headers: {
