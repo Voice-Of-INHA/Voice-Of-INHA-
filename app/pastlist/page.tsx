@@ -14,6 +14,19 @@ interface AnalysisRecord {
   risk: 'medium' | 'high'
 }
 
+// API 응답 데이터의 타입 정의
+interface ApiResponseItem {
+  id?: string
+  _id?: string
+  phoneNumber?: string
+  call_Date?: string
+  created_at?: string
+  call_duration?: string
+  risk_percentage?: number
+  phishing_type?: string
+  audio_file_url?: string
+}
+
 export default function PastListPage() {
   const [records, setRecords] = useState<AnalysisRecord[]>([])
   const [filteredRecords, setFilteredRecords] = useState<AnalysisRecord[]>([])
@@ -36,19 +49,19 @@ export default function PastListPage() {
         throw new Error(`서버 오류: ${response.status} - ${errorText}`)
       }
 
-      const data: any[] = await response.json()
+      const data: ApiResponseItem[] = await response.json()
       console.log("✅ 분석 이력 조회 성공:", data)
 
       const formattedRecords: AnalysisRecord[] = data.map((item) => {
-        const riskPercentage = item.riskPercentage || item.risk_percentage || item.risk_score || 0;
+        const riskPercentage = item.risk_percentage || 0;
         return {
           id: item.id || item._id || `${Date.now()}-${Math.random()}`,
-          phoneNumber: item.phoneNumber || item.phone_number || "알 수 없음",
-          callDate: item.callDate || item.call_date || item.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
-          callDuration: item.callDuration || item.call_duration || item.duration || "00:00",
+          phoneNumber: item.phoneNumber || "알 수 없음",
+          callDate: item.created_at?.split('T')[0] || new Date().toISOString().split('T')[0],
+          callDuration: item.call_duration || "00:00",
           riskPercentage: riskPercentage,
-          phishingType: item.phishingType || item.phishing_type || item.analysis_type || "분석 중",
-          audioFileUrl: item.audioFileUrl || item.audio_file_url || item.file_path || "",
+          phishingType: item.phishing_type || "분석 중",
+          audioFileUrl: item.audio_file_url || "",
           risk: riskPercentage >= 70 ? 'high' : 'medium'
         }
       })
