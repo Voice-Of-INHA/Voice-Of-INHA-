@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 
 // 실제 DB에 저장된 데이터 구조
 interface AnalysisRecord {
@@ -108,7 +108,7 @@ export default function AnalysisDetailPage() {
   }
 
   // 백엔드에서 상세 데이터 가져오기 (현재는 예시 데이터 사용)
-  const loadDetailData = async (recordId: string) => {
+  const loadDetailData = useCallback(async (recordId: string) => {
     setIsLoading(true)
     setError(null)
     
@@ -156,13 +156,13 @@ export default function AnalysisDetailPage() {
     } finally {
       setTimeout(() => setIsLoading(false), 800)
     }
-  }
+  }, []) // Empty dependency array since it doesn't depend on any state/props
 
   useEffect(() => {
     if (id) {
       loadDetailData(id)
     }
-  }, [id])
+  }, [id, loadDetailData]) // Now includes loadDetailData dependency
 
   const getRiskBadge = (riskPercentage: number, risk: string) => {
     switch (risk) {
