@@ -450,6 +450,52 @@ registerProcessor('resampler-processor', ResamplerProcessor);
   }
 
   // 통화 저장 함수 (API route 사용)
+  // const saveCall = async () => {
+  //   if (!phoneNumber.trim()) {
+  //     showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
+  //     return
+  //   }
+
+  //   setIsSaving(true)
+
+  //   try {
+  //     const recordedBlob = new Blob(recordedChunksRef.current, { 
+  //       type: 'audio/webm' 
+  //     })
+
+  //     const formData = new FormData()
+  //     formData.append('audioFile', recordedBlob, `suspicious_call_${Date.now()}.webm`)
+  //     formData.append('phoneNumber', phoneNumber.trim())
+
+  //     console.log("📤 의심 통화 저장 시작:", phoneNumber.trim())
+
+  //     const response = await fetch('/api/proxy', {
+  //       method: 'POST',
+  //       body: formData
+  //     })
+
+  //     if (!response.ok) {
+  //       const errorText = await response.text()
+  //       throw new Error(`업로드 실패: ${response.status} - ${errorText}`)
+  //     }
+
+  //     const result = await response.text()
+  //     console.log("✅ 의심 통화 저장 성공:", result)
+
+  //     showToast("저장 완료", "의심 통화가 성공적으로 저장되었습니다.")
+      
+  //     recordedChunksRef.current = []
+  //     setPhoneNumber('')
+  //     setShowSaveModal(false)
+
+  //   } catch (error) {
+  //     console.error("❌ 저장 실패:", error)
+  //     showToast("저장 실패", "의심 통화 저장 중 오류가 발생했습니다.", "destructive")
+  //   } finally {
+  //     setIsSaving(false)
+  //   }
+  // }
+  // 통화 저장 함수 (B 방식으로 수정)
   const saveCall = async () => {
     if (!phoneNumber.trim()) {
       showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
@@ -459,38 +505,83 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     setIsSaving(true)
 
     try {
-      const recordedBlob = new Blob(recordedChunksRef.current, { 
-        type: 'audio/webm' 
+      const recordedBlob = new Blob(recordedChunksRef.current, {
+        type: 'audio/webm'
       })
 
-      const formData = new FormData()
-      formData.append('audioFile', recordedBlob, `suspicious_call_${Date.now()}.webm`)
-      formData.append('phoneNumber', phoneNumber.trim())
+      const fileName = `suspicious_call_${Date.now()}.webm`
 
-      console.log("📤 의심 통화 저장 시작:", phoneNumber.trim())
-
-      const response = await fetch('/api/proxy', {
-        method: 'POST',
-        body: formData
+      // Step 1: 백엔드에 Presigned URL 요청
+      console.log("📤 S3 업로드를 위한 Presigned URL 요청 시작")
+      const presignedResponse = await fetch(`/api/s3-presigned-url?fileName=${fileName}`, {
+        method: 'GET',
+        headers: {
+          'Content-Type': 'application/json',
+          // 인증 토큰이 필요하면 추가
+          // 'Authorization': `Bearer your-auth-token`
+        }
       })
 
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`업로드 실패: ${response.status} - ${errorText}`)
+      if (!presignedResponse.ok) {
+        throw new Error('Presigned URL 발급 실패')
       }
 
-      const result = await response.text()
-      console.log("✅ 의심 통화 저장 성공:", result)
+      const { presignedUrl, fileUrl } = await presignedResponse.json()
+      console.log("✅ Presigned URL 발급 성공:", fileUrl)
+
+      // Step 2: S3에 파일 직접 업로드
+      console.log("📤 S3에 파일 직접 업로드 시작")
+      const s3Response = await fetch(presignedUrl, {
+        method: 'PUT',
+        body: recordedBlob,
+        headers: {
+          'Content-Type': 'audio/webm',
+        },
+      })
+
+      if (!s3Response.ok) {
+        const errorText = await s3Response.text()
+        throw new Error(`S3 업로드 실패: ${s3Response.status} - ${errorText}`)
+      }
+      console.log("✅ S3 업로드 성공")
+
+      // Step 3: 백엔드에 최종 S3 URL 및 메타데이터 전송
+      console.log("📤 백엔드에 통화 정보 저장 요청 시작")
+      const saveResponse = await fetch('/api/calls/save', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          // 'Authorization': `Bearer your-auth-token`
+        },
+        body: JSON.stringify({
+          fileUrl: fileUrl, // 최종 S3 URL
+          phoneNumber: phoneNumber.trim(),
+          analysisResult: analysisResult,
+          recordedAt: new Date().toISOString()
+        })
+      })
+
+      if (!saveResponse.ok) {
+        const errorText = await saveResponse.text()
+        throw new Error(`백엔드에 정보 저장 실패: ${saveResponse.status} - ${errorText}`)
+      }
+
+      const result = await saveResponse.json()
+      console.log("✅ 통화 정보 백엔드 저장 성공:", result)
 
       showToast("저장 완료", "의심 통화가 성공적으로 저장되었습니다.")
-      
+    
       recordedChunksRef.current = []
       setPhoneNumber('')
       setShowSaveModal(false)
 
     } catch (error) {
       console.error("❌ 저장 실패:", error)
-      showToast("저장 실패", "의심 통화 저장 중 오류가 발생했습니다.", "destructive")
+      if (error instanceof Error) {
+        showToast("저장 실패", error.message, "destructive")
+      } else {
+        showToast("저장 실패", "알 수 없는 오류가 발생했습니다.", "destructive")
+      }
     } finally {
       setIsSaving(false)
     }
