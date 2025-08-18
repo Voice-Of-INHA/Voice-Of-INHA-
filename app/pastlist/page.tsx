@@ -112,7 +112,7 @@ export default function PastListPage() {
     }
     
     loadData()
-  }, [])
+  }, []) // dummyData는 상수이므로 의존성에 포함하지 않음
 
   useEffect(() => {
     let filtered = records

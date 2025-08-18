@@ -396,7 +396,8 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         timestamp: 0
       })
       
-      const _socket = await initializeWebSocket()
+      // WebSocket 연결 (반환값은 ref에 저장되므로 직접 사용하지 않음)
+      await initializeWebSocket()
       const stream = await initializeAudioStream()
       const mediaRecorder = initializeMediaRecorder(stream)
       

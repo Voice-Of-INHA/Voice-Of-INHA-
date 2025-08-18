@@ -80,8 +80,8 @@ export default function HelpModal({ isOpen, onClose, initialPage = 'analysis' }:
             <div>
               <h4 className="text-white font-semibold mb-2">📱 사용법</h4>
               <ul className="space-y-1 ml-4">
-                <li>• 의심스러운 전화가 올 때 '분석 시작' 버튼을 누르세요</li>
-                <li>• 통화가 끝나면 '분석 중지' 버튼을 누르세요</li>
+                <li>• 의심스러운 전화가 올 때 &apos;분석 시작&apos; 버튼을 누르세요</li>
+                <li>• 통화가 끝나면 &apos;분석 중지&apos; 버튼을 누르세요</li>
                 <li>• 위험도가 높으면 자동으로 저장 창이 나타납니다</li>
                 <li>• 상대방 전화번호를 입력하고 저장하면 신고에 활용할 수 있습니다</li>
               </ul>
