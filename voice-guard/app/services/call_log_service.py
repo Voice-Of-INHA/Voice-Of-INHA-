@@ -31,13 +31,8 @@ def list_calls(
     q: str | None = None,
     from_date: str | None = None,
     to_date: str | None = None,
-    page: int = 1,
-    size: int = 20,
     order: str = "desc",  # 'asc'|'desc'
 ):
-    page = max(page, 1)
-    size = min(max(size, 1), 100)
-
     query = db.query(CallLog)
 
     if phone:
@@ -55,15 +50,11 @@ def list_calls(
             # SQLite 호환: 문자열 LIKE
             query = query.filter(func.json_extract(CallLog.keywords, '$').like(f'%{q}%'))
 
-    total = query.count()
     if order == "asc":
         query = query.order_by(CallLog.id.asc())
     else:
         query = query.order_by(CallLog.id.desc())
 
-    items = (query.offset((page - 1) * size)
-                  .limit(size)
-                  .all())
-
-    has_next = (page * size) < total
-    return {"total": total, "items": items, "page": page, "size": size, "has_next": has_next}
+    # ✅ 전체 결과 반환
+    items = query.all()
+    return items

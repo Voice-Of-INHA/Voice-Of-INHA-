@@ -1,7 +1,6 @@
 from pydantic import BaseModel, Field
 from typing import List
-from datetime import datetime, date
-from .common import PageMeta
+from datetime import datetime
 
 class CallCreate(BaseModel):
     phone: str
@@ -23,6 +22,3 @@ class CallResponse(BaseModel):
     class Config:
         from_attributes = True  # ORM -> Pydantic
 
-class CallList(BaseModel):
-    meta: PageMeta
-    items: List[CallResponse]
