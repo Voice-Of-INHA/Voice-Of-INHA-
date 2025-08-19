@@ -7,6 +7,33 @@ export async function GET(req: Request) {
   const id = searchParams.get("id")
   const backendUrl = process.env.BACKEND_URL
 
+  // ✅ 백엔드 헬스 체크 (/health)
+  if (path === "health") {
+    if (!backendUrl) {
+      return new Response("백엔드 URL이 설정되지 않았습니다", { status: 500 })
+    }
+
+    try {
+      const res = await fetch(`${backendUrl}/voice-guard/health`, {
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json",
+        }
+      })
+      
+      if (!res.ok) {
+        throw new Error(`헬스 체크 실패: ${res.status}`)
+      }
+      
+      const data = await res.json()
+      console.log("✅ 백엔드 헬스 체크 성공:", data)
+      return NextResponse.json(data)
+    } catch (err) {
+      console.error("❌ 백엔드 헬스 체크 실패:", err)
+      return new Response("백엔드 서버 연결 실패", { status: 500 })
+    }
+  }
+
   // ✅ 분석 이력 목록 조회 (/list)
   if (path === "list") {
     if (!backendUrl) {

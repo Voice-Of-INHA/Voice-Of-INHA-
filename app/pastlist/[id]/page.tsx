@@ -27,6 +27,55 @@ interface ApiResponseItem {
   audioUrl?: string
 }
 
+// 동그라미 게이지 컴포넌트
+const CircularGauge = ({ percentage, size = 100 }: { percentage: number; size?: number }) => {
+  const radius = size / 2 - 6
+  const circumference = 2 * Math.PI * radius
+  const strokeDashoffset = circumference - (percentage / 100) * circumference
+  
+  const getColor = (percentage: number) => {
+    if (percentage >= 70) return '#ef4444' // red-500
+    if (percentage >= 50) return '#f59e0b' // yellow-500
+    return '#10b981' // green-500
+  }
+
+  return (
+    <div className="relative flex-shrink-0" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="transform -rotate-90">
+        {/* Background circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke="#374151"
+          strokeWidth="6"
+          fill="transparent"
+        />
+        {/* Progress circle */}
+        <circle
+          cx={size / 2}
+          cy={size / 2}
+          r={radius}
+          stroke={getColor(percentage)}
+          strokeWidth="6"
+          fill="transparent"
+          strokeDasharray={circumference}
+          strokeDashoffset={strokeDashoffset}
+          strokeLinecap="round"
+          className="transition-all duration-500"
+        />
+      </svg>
+      {/* Percentage text */}
+      <div className="absolute inset-0 flex items-center justify-center">
+        <div className="text-center">
+          <span className="text-white font-bold text-lg">{percentage}%</span>
+          <div className="text-gray-400 text-xs">위험도</div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // 초를 "00분 00초" 형식으로 변환하는 함수
 const formatDuration = (totalSeconds: number): string => {
   const minutes = Math.floor(totalSeconds / 60)
@@ -53,6 +102,8 @@ export default function AnalysisDetailPage() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [audioElement, setAudioElement] = useState<HTMLAudioElement | null>(null)
   const [error, setError] = useState<string | null>(null)
+  const [currentTime, setCurrentTime] = useState(0)
+  const [duration, setDuration] = useState(0)
   
   // URL에서 ID 추출
   const getId = () => {
@@ -196,17 +247,6 @@ export default function AnalysisDetailPage() {
     }
   }, [id, loadDetailData])
 
-  const getRiskBadge = (riskPercentage: number, risk: string) => {
-    switch (risk) {
-      case 'high':
-        return <span className="px-3 py-1 bg-red-600 text-white text-sm rounded-full font-medium">위험 {riskPercentage}%</span>
-      case 'medium':
-        return <span className="px-3 py-1 bg-yellow-600 text-white text-sm rounded-full font-medium">주의 {riskPercentage}%</span>
-      default:
-        return <span className="px-3 py-1 bg-gray-600 text-white text-sm rounded-full font-medium">알 수 없음</span>
-    }
-  }
-
   const getPhishingTypeColor = (phishingType: string) => {
     if (phishingType.includes('사기') || phishingType.includes('사칭') || phishingType.includes('협박')) {
       return 'bg-red-900 text-red-300 border border-red-600'
@@ -239,24 +279,40 @@ export default function AnalysisDetailPage() {
         console.log("🎵 오디오 재생 시작:", record.audioFileUrl)
         
         const audio = new Audio(record.audioFileUrl)
+        
         audio.onloadstart = () => {
           console.log("🎵 오디오 로딩 시작")
         }
+        
+        audio.onloadedmetadata = () => {
+          console.log("🎵 오디오 메타데이터 로드 완료")
+          setDuration(audio.duration)
+        }
+        
         audio.oncanplay = () => {
           console.log("🎵 오디오 재생 준비 완료")
         }
+        
         audio.onplay = () => {
           console.log("🎵 오디오 재생 중")
           setIsPlaying(true)
         }
+        
         audio.onpause = () => {
           console.log("🎵 오디오 일시정지")
           setIsPlaying(false)
         }
+        
+        audio.ontimeupdate = () => {
+          setCurrentTime(audio.currentTime)
+        }
+        
         audio.onended = () => {
           console.log("🎵 오디오 재생 완료")
           setIsPlaying(false)
+          setCurrentTime(0)
         }
+        
         audio.onerror = (e) => {
           console.error("❌ 오디오 재생 오류:", e)
           alert('오디오 파일을 재생할 수 없습니다. 파일이 손상되었거나 서버에서 접근할 수 없습니다.')
@@ -271,6 +327,20 @@ export default function AnalysisDetailPage() {
       alert('오디오 재생 중 오류가 발생했습니다.')
       setIsPlaying(false)
     }
+  }
+
+  const handleSeek = (e: React.ChangeEvent<HTMLInputElement>) => {
+    const seekTime = parseFloat(e.target.value)
+    if (audioElement) {
+      audioElement.currentTime = seekTime
+      setCurrentTime(seekTime)
+    }
+  }
+
+  const formatTime = (time: number) => {
+    const minutes = Math.floor(time / 60)
+    const seconds = Math.floor(time % 60)
+    return `${minutes}:${seconds.toString().padStart(2, '0')}`
   }
 
   const handleRefresh = () => {
@@ -365,96 +435,86 @@ export default function AnalysisDetailPage() {
                 </div>
               </div>
             </div>
-            {getRiskBadge(record.riskPercentage, record.risk)}
           </div>
           
-          {/* 보이스피싱 유형 */}
-          <div className="mb-6">
-            <span className="text-gray-400 text-sm mb-2 block">탐지된 유형:</span>
-            <span className={`px-3 py-2 text-sm rounded-lg ${getPhishingTypeColor(record.phishingType)}`}>
-              {record.phishingType}
-            </span>
-          </div>
-
-          {/* 키워드 표시 */}
-          {record.keywords.length > 0 && (
-            <div className="mb-6">
-              <span className="text-gray-400 text-sm mb-2 block">탐지된 키워드:</span>
-              <div className="flex flex-wrap gap-2">
-                {record.keywords.map((keyword, index) => (
-                  <span key={index} className="px-2 py-1 bg-blue-900 text-blue-300 text-sm rounded border border-blue-600">
-                    {keyword}
-                  </span>
-                ))}
+          {/* 탐지 정보와 위험도 게이지 */}
+          <div className="flex items-start space-x-8 mb-6">
+            <div className="flex-1 space-y-6">
+              {/* 보이스피싱 유형 */}
+              <div>
+                <span className="text-gray-400 text-sm mb-2 block">탐지된 유형:</span>
+                <span className={`px-3 py-2 text-sm rounded-lg ${getPhishingTypeColor(record.phishingType)}`}>
+                  {record.phishingType}
+                </span>
               </div>
+
+              {/* 키워드 표시 */}
+              {record.keywords.length > 0 && (
+                <div>
+                  <span className="text-gray-400 text-sm mb-2 block">탐지된 키워드:</span>
+                  <div className="flex flex-wrap gap-2">
+                    {record.keywords.map((keyword, index) => (
+                      <span key={index} className="px-2 py-1 bg-blue-900 text-blue-300 text-sm rounded border border-blue-600">
+                        {keyword}
+                      </span>
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
-          )}
+            
+            {/* 위험도 게이지 */}
+            <div className="flex-shrink-0">
+              <CircularGauge percentage={record.riskPercentage} size={120} />
+            </div>
+          </div>
 
           {/* 오디오 재생 */}
-          <div className="mb-6">
-            <button 
-              onClick={handleAudioPlay}
-              className="flex items-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors space-x-2"
-              disabled={isLoading}
-            >
-              {isPlaying ? (
-                <>
-                  <span>⏸️</span>
-                  <span>일시정지</span>
-                </>
-              ) : (
-                <>
-                  <span>▶️</span>
-                  <span>녹음 재생</span>
-                </>
-              )}
-            </button>
-          </div>
-        </div>
-
-        {/* 분석 원인 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">🔍 분석 결과</h3>
-          <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-300 leading-relaxed">
-              {record.phishingType}으로 분류된 통화입니다. 
-              {record.keywords.length > 0 && ` 주요 키워드: ${record.keywords.join(', ')}`}
-            </p>
-          </div>
-        </div>
-
-        {/* 위험도 상세 정보 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
-          <h3 className="text-lg font-semibold text-white mb-4">📊 위험도 분석</h3>
           <div className="space-y-4">
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">위험도 점수</span>
-              <div className="flex items-center space-x-3">
-                <div className="w-32 bg-gray-700 rounded-full h-3">
-                  <div 
-                    className={`h-3 rounded-full ${record.risk === 'high' ? 'bg-red-500' : 'bg-yellow-500'}`}
-                    style={{ width: `${record.riskPercentage}%` }}
-                  ></div>
+            <div className="flex items-center space-x-4">
+              <button 
+                onClick={handleAudioPlay}
+                className="flex items-center px-4 py-3 bg-blue-600 hover:bg-blue-700 text-white rounded-lg transition-colors space-x-2"
+                disabled={isLoading}
+              >
+                {isPlaying ? (
+                  <>
+                    <span>⏸️</span>
+                    <span>일시정지</span>
+                  </>
+                ) : (
+                  <>
+                    <span>▶️</span>
+                    <span>녹음 재생</span>
+                  </>
+                )}
+              </button>
+              
+              {duration > 0 && (
+                <div className="flex items-center space-x-2 text-gray-400 text-sm">
+                  <span>{formatTime(currentTime)}</span>
+                  <span>/</span>
+                  <span>{formatTime(duration)}</span>
                 </div>
-                <span className="text-white font-semibold">{record.riskPercentage}%</span>
+              )}
+            </div>
+            
+            {/* 오디오 재생바 */}
+            {duration > 0 && (
+              <div className="w-full">
+                <input
+                  type="range"
+                  min={0}
+                  max={duration}
+                  value={currentTime}
+                  onChange={handleSeek}
+                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer slider"
+                  style={{
+                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${(currentTime / duration) * 100}%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`
+                  }}
+                />
               </div>
-            </div>
-            
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">위험 등급</span>
-              <span className={`px-3 py-1 rounded-full text-sm font-medium ${
-                record.risk === 'high' 
-                  ? 'bg-red-900 text-red-300' 
-                  : 'bg-yellow-900 text-yellow-300'
-              }`}>
-                {record.risk === 'high' ? '고위험' : '중위험'}
-              </span>
-            </div>
-            
-            <div className="flex items-center justify-between">
-              <span className="text-gray-400">통화 시간</span>
-              <span className="text-white">{record.callDuration}</span>
-            </div>
+            )}
           </div>
         </div>
 

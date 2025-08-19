@@ -1,8 +1,61 @@
 "use client"
+import { useState, useEffect } from 'react'
 
 export default function Home() {
+  const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking')
+
+  // 백엔드 헬스 체크 함수
+  const checkBackendHealth = async () => {
+    try {
+      console.log('백엔드 헬스 체크 시작...')
+      const response = await fetch('/api/proxy?path=health')
+      console.log('응답 상태:', response.status)
+      
+      if (response.ok) {
+        const data = await response.json()
+        console.log('백엔드 상태:', data)
+        setBackendStatus('online')
+      } else {
+        console.error('백엔드 응답 실패:', response.status, response.statusText)
+        setBackendStatus('offline')
+      }
+    } catch (error) {
+      console.error('백엔드 헬스 체크 실패:', error)
+      setBackendStatus('offline')
+    }
+  }
+
+  // 컴포넌트 마운트시 백엔드 상태 확인
+  useEffect(() => {
+    checkBackendHealth()
+  }, [])
+
   return (
     <div className="min-h-screen relative overflow-hidden bg-black">
+      {/* 백엔드 상태 표시 */}
+      <div className="absolute top-6 right-6 z-20">
+        <div className={`flex items-center gap-2 px-3 py-2 rounded-lg backdrop-blur-sm border ${
+          backendStatus === 'online' 
+            ? 'bg-green-900/50 border-green-600 text-green-300'
+            : backendStatus === 'offline'
+            ? 'bg-red-900/50 border-red-600 text-red-300'
+            : 'bg-gray-900/50 border-gray-600 text-gray-300'
+        }`}>
+          <div className={`w-2 h-2 rounded-full ${
+            backendStatus === 'online' 
+              ? 'bg-green-400 animate-pulse'
+              : backendStatus === 'offline'
+              ? 'bg-red-400'
+              : 'bg-gray-400 animate-pulse'
+          }`} />
+          <span className="text-sm font-medium">
+            {backendStatus === 'checking' && '상태 확인 중...'}
+            {backendStatus === 'online' && '서버 연결됨'}
+            {backendStatus === 'offline' && '서버 연결 안됨'}
+          </span>
+        </div>
+      </div>
+
       {/* 메인 컨텐츠 */}
       <div className="relative z-10 flex flex-col items-center justify-center min-h-screen px-6 text-center">
         {/* 제목 */}
@@ -20,23 +73,44 @@ export default function Home() {
           {/* 탐지 시작 버튼 */}
           <button 
             onClick={() => window.location.href = '/analysis'}
-            className="w-full py-4 px-8 bg-gray-800 hover:bg-gray-700 text-white font-bold text-lg rounded-2xl shadow-lg transform hover:scale-105 transition-all duration-200 backdrop-blur-sm border border-gray-600"
+            disabled={backendStatus !== 'online'}
+            className={`w-full py-4 px-8 font-bold text-lg rounded-2xl shadow-lg transform transition-all duration-200 backdrop-blur-sm border ${
+              backendStatus === 'online'
+                ? 'bg-gray-800 hover:bg-gray-700 text-white border-gray-600 hover:scale-105'
+                : 'bg-gray-700 text-gray-400 border-gray-500 cursor-not-allowed opacity-50'
+            }`}
           >
-            탐지 시작
+            {backendStatus === 'checking' ? '연결 확인 중...' : '탐지 시작'}
           </button>
           
           {/* 과거 이력 조회 버튼 */}
           <button 
             onClick={() => window.location.href = '/pastlist'}
-            className="w-full py-4 px-8 bg-gray-900 hover:bg-gray-800 text-white font-bold text-lg rounded-2xl shadow-lg transform hover:scale-105 transition-all duration-200 backdrop-blur-sm border border-gray-600"
+            disabled={backendStatus !== 'online'}
+            className={`w-full py-4 px-8 font-bold text-lg rounded-2xl shadow-lg transform transition-all duration-200 backdrop-blur-sm border ${
+              backendStatus === 'online'
+                ? 'bg-gray-900 hover:bg-gray-800 text-white border-gray-600 hover:scale-105'
+                : 'bg-gray-800 text-gray-400 border-gray-500 cursor-not-allowed opacity-50'
+            }`}
           >
             과거 이력 조회
+          </button>
+
+          {/* 백엔드 상태 새로고침 버튼 */}
+          <button 
+            onClick={checkBackendHealth}
+            className="mt-4 px-4 py-2 bg-blue-900 hover:bg-blue-800 text-blue-300 text-sm rounded-lg border border-blue-600 transform hover:scale-105 transition-all duration-200"
+          >
+            🔄 연결 상태 새로고침
           </button>
         </div>
 
         {/* 추가 정보 */}
         <div className="mt-16 text-gray-400 text-sm opacity-80">
           <p>📞 실시간 통화 분석 • 🛡️ AI 기반 탐지</p>
+          {backendStatus === 'offline' && (
+            <p className="text-red-400 mt-2">⚠️ 서버 연결이 필요합니다</p>
+          )}
         </div>
       </div>
 
