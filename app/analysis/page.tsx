@@ -84,12 +84,12 @@ export default function AnalysisPage() {
   const streamRef = useRef<MediaStream | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
 
-  // 환경 설정 - 여러 URL 시도
+  // 환경 설정 - CloudType 도메인 사용
   const WS_URLS = [
-    "wss://174.44.164.18:8000/ws/stt/",
-    "ws://174.44.164.18:8000/ws/stt/",
-    "wss://174.44.164.18:8000/ws/stt",
-    "ws://174.44.164.18:8000/ws/stt"
+    "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
+    "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt",
+    "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
+    "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt"
   ]
   const CHUNK_MS = 500
   const TARGET_SR = 16000
@@ -532,12 +532,10 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     console.log("🧪 WebSocket 연결 테스트 시작...")
     
     const testUrls = [
-      "wss://174.44.164.18:8000/ws/stt/",
-      "ws://174.44.164.18:8000/ws/stt/", 
-      "wss://174.44.164.18:8000/ws/stt",
-      "ws://174.44.164.18:8000/ws/stt",
-      "wss://174.44.164.18:8000/",
-      "ws://174.44.164.18:8000/"
+      "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
+      "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt",
+      "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
+      "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt"
     ]
 
     for (const url of testUrls) {
