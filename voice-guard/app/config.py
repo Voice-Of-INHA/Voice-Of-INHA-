@@ -1,9 +1,9 @@
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 class Settings(BaseSettings):
-    db_url: str = "sqlite:///./voiceguard.db"
-    phone_salt: str = "dev_salt"
-    allowed_origins: str = "http://localhost:5173"
+    db_url: str
+    phone_salt: str
+    allowed_origins: str
 
     aws_region: str | None = None
     aws_s3_bucket: str | None = None

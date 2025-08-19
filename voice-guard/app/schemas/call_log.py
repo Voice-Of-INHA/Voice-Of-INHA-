@@ -1,11 +1,10 @@
 from pydantic import BaseModel, Field
 from typing import List
-from datetime import date
+from datetime import datetime, date
 from .common import PageMeta
 
 class CallCreate(BaseModel):
     phone: str
-    callDate: date
     totalSeconds: int = Field(ge=0)
     riskScore: int = Field(ge=0, le=100)
     fraudType: str
@@ -14,7 +13,7 @@ class CallCreate(BaseModel):
 
 class CallResponse(BaseModel):
     id: int
-    callDate: date
+    callDate: datetime
     totalSeconds: int
     riskScore: int
     fraudType: str

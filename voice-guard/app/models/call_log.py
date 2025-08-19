@@ -8,7 +8,7 @@ class CallLog(Base):
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
     phoneHash: Mapped[str] = mapped_column(String(64))       # 전화번호는 해시 저장 권장
-    callDate: Mapped[date] = mapped_column(Date)             # YYYY-MM-DD
+    callDate: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)             # 2025-08-19 15:32:10+00:00
     totalSeconds: Mapped[int] = mapped_column(Integer)       # 총 통화시간(초)
     riskScore: Mapped[int] = mapped_column(Integer)          # 0~100
     fraudType: Mapped[str] = mapped_column(String(40))       # '검찰사칭' 등
