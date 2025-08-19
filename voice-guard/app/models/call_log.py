@@ -14,4 +14,3 @@ class CallLog(Base):
     fraudType: Mapped[str] = mapped_column(String(40))       # '검찰사칭' 등
     keywords: Mapped[list] = mapped_column(JSON)             # ["계좌이체","원격제어"]
     audioUrl: Mapped[str] = mapped_column(String(255))       # S3 URL
-    createdAt: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
