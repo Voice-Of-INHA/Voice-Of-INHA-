@@ -1,6 +1,5 @@
 # app/main.py
-import os, base64, json
-from pathlib import Path
+import os
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
@@ -9,32 +8,10 @@ from .config import settings
 from .db import Base, engine
 from .routers import call_logs, uploads, realtime, voice_guard
 
-# cloudtype
-if "GCP_KEY_BASE64" in os.environ:
-    key_content = base64.b64decode(os.environ["GCP_KEY_BASE64"]).decode("utf-8")
-    os.makedirs("/app/keys", exist_ok=True)
-    with open("/app/keys/gcp-stt-key.json", "w") as f:
-        f.write(key_content)
-    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = "/app/keys/gcp-stt-key.json"
-
-# cloudtype
-
 # DB 모델 자동생성
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(title="VoiceGuard API - 통합 시스템")
-
-# 👇 여기부터 붙여넣기
-SERVE_STATIC = os.getenv("SERVE_STATIC", "false").lower() == "true"
-
-BASE_DIR = Path(__file__).resolve().parent      # .../project-root/app
-ROOT_DIR = BASE_DIR.parent                      # .../project-root
-static_dir = (ROOT_DIR / "static").resolve()    # .../project-root/static
-
-if SERVE_STATIC and static_dir.is_dir():
-    from fastapi.staticfiles import StaticFiles
-    app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
-# 👆 여기까지
 
 # CORS: 프론트 로컬 개발 주소 허용
 origins = [o.strip() for o in settings.allowed_origins.split(",") if o.strip()]
