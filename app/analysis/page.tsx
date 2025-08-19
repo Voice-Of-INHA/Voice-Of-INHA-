@@ -876,140 +876,134 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 통화 저장 함수 (S3 업로드 with fallback) - callDate 제거
+  // 통화 저장 함수 (S3 업로드 복원)
   const saveCall = async () => {
-    if (!phoneNumber.trim()) {
-      showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
-      return
-    }
-
-    setIsSaving(true)
-
-    try {
-      // 1단계: 녹음 파일 생성
-      const recordedBlob = new Blob(recordedChunksRef.current, {
-        type: 'audio/webm'
-      })
-
-      const fileName = `call_${Date.now()}.webm`
-      let audioUrl = `temp://call_${Date.now()}.webm` // 기본값
-
-      // 2단계: S3 업로드 시도 (실패 시 임시 URL 사용)
-      try {
-        // Presigned URL 요청
-        console.log("📤 S3 업로드를 위한 Presigned URL 요청 시작")
-        const presignedResponse = await fetch(`/api/uploads/presign`, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            fileName: fileName,
-            contentType: 'audio/webm'
-          })
-        })
-
-        if (presignedResponse.ok) {
-          const { presignedUrl, fileUrl } = await presignedResponse.json()
-          console.log("✅ Presigned URL 발급 성공:", fileUrl)
-
-          // S3에 파일 업로드
-          console.log("📤 S3에 파일 직접 업로드 시작")
-          console.log("업로드할 파일 크기:", recordedBlob.size, "bytes")
-          console.log("업로드 URL:", presignedUrl)
-          
-          try {
-            const s3Response = await fetch(presignedUrl, {
-              method: 'PUT',
-              body: recordedBlob,
-              headers: {
-                'Content-Type': 'audio/webm',
-              },
-            })
-
-            console.log("S3 업로드 응답 상태:", s3Response.status)
-            console.log("S3 응답 헤더:", Object.fromEntries(s3Response.headers.entries()))
-
-            if (s3Response.ok) {
-              console.log("✅ S3 업로드 성공")
-              audioUrl = fileUrl // 실제 S3 URL 사용
-            } else {
-              const errorText = await s3Response.text()
-              console.error("S3 업로드 실패:", s3Response.status, errorText)
-              throw new Error(`S3 업로드 실패: ${s3Response.status}`)
-            }
-          } catch (s3Error) {
-            console.error("S3 fetch 오류:", s3Error)
-            if (s3Error instanceof TypeError && s3Error.message.includes('fetch')) {
-              console.log("CORS 오류로 인한 S3 업로드 실패, 임시 URL 사용")
-            }
-            throw s3Error
-          }
-        } else {
-          const errorText = await presignedResponse.text()
-          console.error("Presigned URL 발급 실패:", presignedResponse.status, errorText)
-          throw new Error(`Presigned URL 발급 실패: ${presignedResponse.status}`)
-        }
-      } catch (uploadError) {
-        const errorMessage = uploadError instanceof Error ? uploadError.message : String(uploadError)
-        console.warn("⚠️ S3 업로드 실패, 임시 URL로 진행:", errorMessage)
-        // S3 업로드 실패해도 계속 진행 (임시 URL 사용)
-      }
-
-      // 3단계: 통화 데이터 저장 (S3 성공/실패 무관하게 진행) - callDate 제거
-      console.log("📤 백엔드에 통화 기록 저장 요청 시작")
-      
-      const callData = {
-        phone: phoneNumber.trim(),
-        totalSeconds: recordingTime, // 녹음 시간 (초)
-        riskScore: analysisResult.riskScore,
-        fraudType: determineFraudType(analysisResult.keywords, analysisResult.reason),
-        keywords: analysisResult.keywords,
-        audioUrl: audioUrl // S3 URL 또는 임시 URL
-      }
-
-      console.log("전송할 통화 데이터:", callData)
-
-      const saveResponse = await fetch('/api/calls', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(callData)
-      })
-
-      if (!saveResponse.ok) {
-        const errorText = await saveResponse.text()
-        throw new Error(`백엔드에 통화 기록 저장 실패: ${saveResponse.status} - ${errorText}`)
-      }
-
-      const result = await saveResponse.json()
-      console.log("✅ 통화 기록 백엔드 저장 성공:", result)
-
-      // 성공 메시지 (S3 업로드 성공 여부에 따라 다른 메시지)
-      const isS3Upload = audioUrl.startsWith('https://')
-      const successMessage = isS3Upload 
-        ? "의심 통화가 성공적으로 저장되었습니다."
-        : "의심 통화 기록이 저장되었습니다. (오디오 파일은 S3 설정 완료 후 업로드 예정)"
-      
-      showToast("저장 완료", successMessage)
-      
-      // 초기화
-      recordedChunksRef.current = []
-      setPhoneNumber('')
-      setShowSaveModal(false)
-
-    } catch (error) {
-      console.error("❌ 저장 실패:", error)
-      if (error instanceof Error) {
-        showToast("저장 실패", error.message, "destructive")
-      } else {
-        showToast("저장 실패", "알 수 없는 오류가 발생했습니다.", "destructive")
-      }
-    } finally {
-      setIsSaving(false)
-    }
+  if (!phoneNumber.trim()) {
+    showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
+    return
   }
+
+  setIsSaving(true)
+
+  try {
+    // 1단계: 실제 녹음된 형식 확인
+    const actualMimeType = mediaRecorderRef.current?.mimeType || 'audio/webm'
+    console.log("📄 실제 녹음된 MIME 타입:", actualMimeType)
+
+    // 1단계: 녹음 파일 생성
+    const recordedBlob = new Blob(recordedChunksRef.current, {
+      type: actualMimeType  // 실제 녹음된 타입 사용
+    })
+
+    // 파일 확장자 결정
+    let fileExtension = '.webm'
+    if (actualMimeType.includes('mpeg') || actualMimeType.includes('mp3')) {
+      fileExtension = '.mp3'
+    } else if (actualMimeType.includes('mp4') || actualMimeType.includes('m4a')) {
+      fileExtension = '.m4a'
+    }
+
+    const fileName = `call_${Date.now()}${fileExtension}`
+    console.log("📄 파일명:", fileName, "MIME:", actualMimeType)
+
+    // 2단계: Presigned URL 요청 (POST)
+    console.log("📤 S3 업로드를 위한 Presigned URL 요청 시작")
+    const presignedResponse = await fetch(`/api/uploads/presign`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        fileName: fileName,
+        contentType: actualMimeType  // 실제 타입 사용
+      })
+    })
+
+    console.log("Presigned URL 응답 상태:", presignedResponse.status)
+    
+    if (!presignedResponse.ok) {
+      const errorText = await presignedResponse.text()
+      console.error("Presigned URL 오류 응답:", errorText)
+      throw new Error(`Presigned URL 발급 실패: ${presignedResponse.status} - ${errorText}`)
+    }
+
+    const { presignedUrl, fileUrl } = await presignedResponse.json()
+    console.log("✅ Presigned URL 발급 성공")
+    console.log("📎 최종 S3 URL:", fileUrl)
+
+    // 3단계: S3에 파일 직접 업로드 (PUT) - CORS 헤더 추가
+    console.log("📤 S3에 파일 직접 업로드 시작")
+    const s3Response = await fetch(presignedUrl, {
+      method: 'PUT',
+      body: recordedBlob,
+      headers: {
+        'Content-Type': actualMimeType,  // 실제 타입과 일치
+        // S3 접근을 위한 추가 헤더는 Presigned URL에 포함됨
+      },
+    })
+
+    console.log("S3 업로드 응답 상태:", s3Response.status)
+
+    if (!s3Response.ok) {
+      const errorText = await s3Response.text()
+      console.error("S3 업로드 오류:", errorText)
+      throw new Error(`S3 업로드 실패: ${s3Response.status} - ${errorText}`)
+    }
+    console.log("✅ S3 업로드 성공")
+
+    // 4단계: 백엔드에 통화 기록 저장 (callDate 제거)
+    console.log("📤 백엔드에 통화 기록 저장 요청 시작")
+    
+    const callData = {
+      phone: phoneNumber.trim(),
+      // callDate 제거됨 - 백엔드에서 자동 생성
+      totalSeconds: recordingTime, // 녹음 시간 (초)
+      riskScore: analysisResult.riskScore,
+      fraudType: determineFraudType(analysisResult.keywords, analysisResult.reason),
+      keywords: analysisResult.keywords,
+      audioUrl: fileUrl // 실제 S3 URL
+    }
+
+    console.log("전송할 통화 데이터:", callData)
+
+    const saveResponse = await fetch('/api/calls', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(callData)
+    })
+
+    if (!saveResponse.ok) {
+      const errorText = await saveResponse.text()
+      throw new Error(`백엔드에 통화 기록 저장 실패: ${saveResponse.status} - ${errorText}`)
+    }
+
+    const result = await saveResponse.json()
+    console.log("✅ 통화 기록 백엔드 저장 성공:", result)
+
+    // S3 URL 테스트 (개발용)
+    console.log("🔗 S3 URL 테스트:", fileUrl)
+    console.log("💡 브라우저에서 테스트하려면 이 URL을 복사하세요:", fileUrl)
+
+    showToast("저장 완료", "의심 통화가 성공적으로 저장되었습니다.")
+    
+    // 초기화
+    recordedChunksRef.current = []
+    setPhoneNumber('')
+    setShowSaveModal(false)
+
+  } catch (error) {
+    console.error("❌ 저장 실패:", error)
+    if (error instanceof Error) {
+      showToast("저장 실패", error.message, "destructive")
+    } else {
+      showToast("저장 실패", "알 수 없는 오류가 발생했습니다.", "destructive")
+    }
+  } finally {
+    setIsSaving(false)
+  }
+}
 
   // 저장 건너뛰기
   const skipSave = () => {

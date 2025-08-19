@@ -12,7 +12,7 @@ interface AnalysisRecord {
   phishingType: string
   keywords: string[]
   audioFileUrl: string
-  risk: 'medium' | 'high'
+  risk: "medium" | "high"
 }
 
 // API 응답 데이터의 타입 정의
@@ -31,7 +31,9 @@ interface ApiResponseItem {
 const formatDuration = (totalSeconds: number): string => {
   const minutes = Math.floor(totalSeconds / 60)
   const seconds = totalSeconds % 60
-  return `${minutes.toString().padStart(2, '0')}분 ${seconds.toString().padStart(2, '0')}초`
+  return `${minutes.toString().padStart(2, "0")}분 ${seconds
+    .toString()
+    .padStart(2, "0")}초`
 }
 
 // 날짜를 "0000년00월00일" 형식으로 변환하는 함수
@@ -39,8 +41,8 @@ const formatDate = (dateString: string): string => {
   try {
     const date = new Date(dateString)
     const year = date.getFullYear()
-    const month = (date.getMonth() + 1).toString().padStart(2, '0')
-    const day = date.getDate().toString().padStart(2, '0')
+    const month = (date.getMonth() + 1).toString().padStart(2, "0")
+    const day = date.getDate().toString().padStart(2, "0")
     return `${year}년${month}월${day}일`
   } catch {
     return dateString // 변환 실패 시 원본 반환
@@ -51,7 +53,7 @@ export default function PastListPage() {
   const [records, setRecords] = useState<AnalysisRecord[]>([])
   const [filteredRecords, setFilteredRecords] = useState<AnalysisRecord[]>([])
   const [searchTerm, setSearchTerm] = useState("")
-  const [filterRisk, setFilterRisk] = useState<'all' | 'high' | 'medium'>('all')
+  const [filterRisk, setFilterRisk] = useState<"all" | "high" | "medium">("all")
   const [isLoading, setIsLoading] = useState(true)
   const [showHelpModal, setShowHelpModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -62,103 +64,57 @@ export default function PastListPage() {
 
     try {
       console.log("📋 분석 이력 조회 시작...")
-      
-      // 여러 엔드포인트 시도
-      let response
-      let data
-      
-      // 1차 시도: /api/calls
-      try {
-        console.log("1차 시도: /api/calls")
-        response = await fetch('/api/calls', {
-          method: 'GET',
-          headers: {
-            'Content-Type': 'application/json',
-          }
-        })
-        
-        if (response.ok) {
-          data = await response.json()
-          console.log("✅ /api/calls 성공:", data)
-        } else {
-          throw new Error(`/api/calls 실패: ${response.status}`)
-        }
-      } catch (callsError) {
-        console.log("❌ /api/calls 실패:", callsError)
-        
-        // 2차 시도: proxy를 통한 list
-        try {
-          console.log("2차 시도: /api/proxy?path=list")
-          response = await fetch('/api/proxy?path=list')
-          
-          if (response.ok) {
-            data = await response.json()
-            console.log("✅ /api/proxy?path=list 성공:", data)
-          } else {
-            throw new Error(`/api/proxy?path=list 실패: ${response.status}`)
-          }
-        } catch (proxyError) {
-          console.log("❌ /api/proxy?path=list 실패:", proxyError)
-          
-          // 3차 시도: 다른 엔드포인트들
-          const fallbackEndpoints = [
-            '/api/proxy?path=calls',
-            '/api/proxy?path=records',
-            '/api/proxy?path=history'
-          ]
-          
-          let success = false
-          for (const endpoint of fallbackEndpoints) {
-            try {
-              console.log(`3차 시도: ${endpoint}`)
-              response = await fetch(endpoint)
-              if (response.ok) {
-                data = await response.json()
-                console.log(`✅ ${endpoint} 성공:`, data)
-                success = true
-                break
-              }
-            } catch (error) {
-              console.log(`❌ ${endpoint} 실패:`, error)
-            }
-          }
-          
-          if (!success) {
-            throw new Error("모든 엔드포인트 연결 실패")
-          }
-        }
+
+      const response = await fetch("/api/calls", {
+        method: "GET",
+        headers: { "Content-Type": "application/json" },
+      })
+
+      if (!response.ok) {
+        const errorText = await response.text()
+        throw new Error(`/api/calls 실패: ${response.status} - ${errorText}`)
       }
 
-      // 데이터가 없으면 빈 배열로 처리
+      const data = await response.json()
+      console.log("✅ /api/calls 성공:", data)
+
       if (!data || !Array.isArray(data)) {
         console.log("⚠️ 데이터가 없거나 배열이 아님, 빈 배열로 처리")
-        data = []
+        setRecords([])
+        return
       }
 
-      const formattedRecords: AnalysisRecord[] = data.map((item: ApiResponseItem) => {
-        const riskScore = item.riskScore || 0;
-        const callDate = item.callDate ? formatDate(item.callDate) : new Date().toISOString().split('T')[0]
-        const callDuration = item.totalSeconds ? formatDuration(item.totalSeconds) : "00분 00초"
-        
-        return {
-          id: item.id?.toString() || Math.random().toString(),
-          phoneNumber: item.phone || "알 수 없음",
-          callDate: callDate,
-          callDuration: callDuration,
-          riskPercentage: riskScore,
-          phishingType: item.fraudType || "분석 중",
-          keywords: item.keywords || [],
-          audioFileUrl: item.audioUrl || "",
-          risk: riskScore >= 70 ? 'high' : 'medium'
+      const formattedRecords: AnalysisRecord[] = data.map(
+        (item: ApiResponseItem) => {
+          const riskScore = item.riskScore || 0
+          const callDate = item.callDate
+            ? formatDate(item.callDate)
+            : new Date().toISOString().split("T")[0]
+          const callDuration = item.totalSeconds
+            ? formatDuration(item.totalSeconds)
+            : "00분 00초"
+
+          return {
+            id: item.id?.toString() || Math.random().toString(),
+            phoneNumber: item.phone || "알 수 없음",
+            callDate: callDate,
+            callDuration: callDuration,
+            riskPercentage: riskScore,
+            phishingType: item.fraudType || "분석 중",
+            keywords: item.keywords || [],
+            audioFileUrl: item.audioUrl || "",
+            risk: riskScore >= 70 ? "high" : "medium",
+          }
         }
-      })
-      
+      )
+
       setRecords(formattedRecords)
       console.log("✅ 분석 이력 조회 완료:", formattedRecords.length, "건")
-      
     } catch (error) {
       console.error("❌ 분석 이력 조회 실패:", error)
-      setError(error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다")
+      setError(
+        error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다"
+      )
       setRecords([])
     } finally {
       setIsLoading(false)
@@ -173,15 +129,20 @@ export default function PastListPage() {
     let filtered = records
 
     if (searchTerm) {
-      filtered = filtered.filter(record => 
-        record.phoneNumber.includes(searchTerm) ||
-        record.phishingType.toLowerCase().includes(searchTerm.toLowerCase()) ||
-        record.keywords.some(keyword => keyword.toLowerCase().includes(searchTerm.toLowerCase()))
+      filtered = filtered.filter(
+        (record) =>
+          record.phoneNumber.includes(searchTerm) ||
+          record.phishingType
+            .toLowerCase()
+            .includes(searchTerm.toLowerCase()) ||
+          record.keywords.some((keyword) =>
+            keyword.toLowerCase().includes(searchTerm.toLowerCase())
+          )
       )
     }
 
-    if (filterRisk !== 'all') {
-      filtered = filtered.filter(record => record.risk === filterRisk)
+    if (filterRisk !== "all") {
+      filtered = filtered.filter((record) => record.risk === filterRisk)
     }
 
     setFilteredRecords(filtered)
@@ -189,18 +150,35 @@ export default function PastListPage() {
 
   const getRiskBadge = (riskPercentage: number, risk: string) => {
     switch (risk) {
-      case 'high':
-        return <span className="px-3 py-1 bg-red-600 text-white text-sm rounded-full font-medium">위험 {riskPercentage}%</span>
-      case 'medium':
-        return <span className="px-3 py-1 bg-yellow-600 text-white text-sm rounded-full font-medium">주의 {riskPercentage}%</span>
+      case "high":
+        return (
+          <span className="px-3 py-1 bg-red-600 text-white text-sm rounded-full font-medium">
+            위험 {riskPercentage}%
+          </span>
+        )
+      case "medium":
+        return (
+          <span className="px-3 py-1 bg-yellow-600 text-white text-sm rounded-full font-medium">
+            주의 {riskPercentage}%
+          </span>
+        )
       default:
-        return <span className="px-3 py-1 bg-gray-600 text-white text-sm rounded-full font-medium">알 수 없음</span>
+        return (
+          <span className="px-3 py-1 bg-gray-600 text-white text-sm rounded-full font-medium">
+            알 수 없음
+          </span>
+        )
     }
   }
 
   const getPhishingTypeColor = (phishingType: string) => {
-    if (phishingType.includes('사기') || phishingType.includes('사칭') || phishingType.includes('협박')) return 'bg-red-900 text-red-300'
-    return 'bg-yellow-900 text-yellow-300'
+    if (
+      phishingType.includes("사기") ||
+      phishingType.includes("사칭") ||
+      phishingType.includes("협박")
+    )
+      return "bg-red-900 text-red-300"
+    return "bg-yellow-900 text-yellow-300"
   }
 
   return (
@@ -392,9 +370,9 @@ export default function PastListPage() {
         )}
       </div>
 
-      <HelpModal 
-        isOpen={showHelpModal} 
-        onClose={() => setShowHelpModal(false)} 
+      <HelpModal
+        isOpen={showHelpModal}
+        onClose={() => setShowHelpModal(false)}
         initialPage="pastlist"
       />
     </main>

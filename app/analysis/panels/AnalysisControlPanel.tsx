@@ -24,8 +24,8 @@ export default function AnalysisControlPanel({
 
   return (
     <div>
-      <h2 className="text-xl font-semibold text-white mb-4">통화 분석 및 녹음</h2>
-
+      <h2 className="text-xl font-semibold text-white mb-4">🔍 실시간 분석 + 📹 MP3 녹음</h2>
+      
       <div className="text-center mb-4">
         <button
           onClick={isActive ? onStopAnalysis : onStartAnalysis}
@@ -46,12 +46,12 @@ export default function AnalysisControlPanel({
           ) : isActive ? (
             <div className="flex flex-col items-center">
               <span className="text-2xl mb-1">⏹️</span>
-              <span className="text-sm">분석 중지</span>
+              <span className="text-sm">분석+녹음 중지</span>
             </div>
           ) : (
             <div className="flex flex-col items-center">
               <span className="text-2xl mb-1">🎙️</span>
-              <span className="text-sm">분석 시작</span>
+              <span className="text-sm">분석+녹음 시작</span>
             </div>
           )}
         </button>
@@ -61,7 +61,7 @@ export default function AnalysisControlPanel({
         <>
           <div className="mb-4 text-center">
             <p className="text-white text-lg font-mono">{formatTime(recordingTime)}</p>
-            <p className="text-gray-400 text-xs">분석 시간</p>
+            <p className="text-gray-400 text-xs">분석 및 녹음 시간</p>
           </div>
 
           <div className="mt-4">
@@ -74,9 +74,20 @@ export default function AnalysisControlPanel({
                 style={{ width: `${Math.min(audioLevel, 100)}%` }}
               />
             </div>
-            <p className="text-gray-400 text-xs mt-1">🔴 분석 중...</p>
+            <p className="text-gray-400 text-xs mt-1">
+              {connectionStatus === 'connected' ? '🟢 실시간 분석 + 🔴 MP3 녹음 중...' : '🔴 MP3 녹음 중...'}
+            </p>
           </div>
         </>
+      )}
+
+      {!isActive && (
+        <div className="mt-4 p-3 bg-gray-800 rounded-lg">
+          <p className="text-gray-300 text-sm text-center">
+            💡 버튼을 누르면 실시간 분석과 MP3 녹음이<br/>
+            동시에 시작됩니다
+          </p>
+        </div>
       )}
     </div>
   )
