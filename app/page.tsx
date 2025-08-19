@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 
 export default function Home() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking')
-  const [apiResponse, setApiResponse] = useState<any>(null)
+  const [apiResponse, setApiResponse] = useState<{ status?: string; service?: string; error?: string } | null>(null)
   const [showResponse, setShowResponse] = useState(false)
 
   // 백엔드 헬스 체크 함수
