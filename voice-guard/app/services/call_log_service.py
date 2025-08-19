@@ -4,12 +4,13 @@ from ..models.call_log import CallLog
 from ..schemas.call_log import CallCreate
 from ..utils.security import phone_hash
 from ..db import engine
-from datetime import datetime
+from datetime import datetime, timezone
+
 
 def create_call(db: Session, body: CallCreate) -> CallLog:
     row = CallLog(
         phoneHash=phone_hash(body.phone),
-        callDate=datetime.utcnow(),
+        callDate=datetime.now(timezone.utc),
         totalSeconds=body.totalSeconds,
         riskScore=body.riskScore,
         fraudType=body.fraudType,
