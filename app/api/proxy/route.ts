@@ -9,18 +9,61 @@ export async function GET(req: Request) {
 
   // ✅ 백엔드 헬스 체크 (/health)
   if (path === "health") {
+    console.log("🔍 헬스 체크 시작 - backendUrl:", backendUrl)
+    
     if (!backendUrl) {
-      return new Response("백엔드 URL이 설정되지 않았습니다", { status: 500 })
+      return new Response(JSON.stringify({
+        error: "백엔드 URL이 설정되지 않았습니다",
+        env: process.env.NODE_ENV
+      }), { 
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      })
     }
     
     try {
-      const res = await fetch(`${backendUrl}/voice-guard/health`, { method: "GET" })
-      if (!res.ok) throw new Error(`헬스 체크 응답 오류: ${res.status}`)
+      const targetUrl = `${backendUrl}/voice-guard/health`
+      console.log("📡 요청 URL:", targetUrl)
+      
+      const res = await fetch(targetUrl, { 
+        method: "GET",
+        headers: {
+          "Content-Type": "application/json"
+        }
+      })
+      
+      console.log("📥 응답 상태:", res.status)
+      
+      if (!res.ok) {
+        const errorText = await res.text()
+        console.error("❌ 백엔드 응답 실패:", res.status, errorText)
+        
+        return new Response(JSON.stringify({
+          error: `HTTP ${res.status}: ${errorText}`,
+          url: targetUrl
+        }), { 
+          status: 500,
+          headers: { "Content-Type": "application/json" }
+        })
+      }
+      
       const data = await res.json()
+      console.log("✅ 헬스 체크 성공:", data)
       return NextResponse.json(data)
     } catch (err) {
       console.error("❌ 헬스 체크 실패:", err)
-      return new Response("백엔드 서버 연결 실패", { status: 500 })
+      
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      const errorName = err instanceof Error ? err.name : 'UnknownError'
+      
+      return new Response(JSON.stringify({
+        error: `연결 실패: ${errorMessage}`,
+        type: errorName,
+        url: `${backendUrl}/voice-guard/health`
+      }), { 
+        status: 500,
+        headers: { "Content-Type": "application/json" }
+      })
     }
   }
 
@@ -80,7 +123,8 @@ export async function GET(req: Request) {
 
   } catch (err) {
     console.error("❌ 백엔드 연결 실패:", err)
-    return new Response("백엔드에 연결할 수 없습니다.", { status: 502 })
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    return new Response(`백엔드에 연결할 수 없습니다: ${errorMessage}`, { status: 502 })
   }
 }
 
@@ -152,11 +196,13 @@ export async function POST(req: Request) {
   } catch (err) {
     console.error("❌ 의심 통화 업로드 요청 실패:", err)
     
-    if (err instanceof TypeError && err.message.includes('fetch')) {
+    const errorMessage = err instanceof Error ? err.message : String(err)
+    
+    if (err instanceof TypeError && errorMessage.includes('fetch')) {
       return new Response("백엔드 서버에 연결할 수 없습니다", { status: 502 })
     }
     
-    return new Response("파일 업로드 중 오류가 발생했습니다.", { status: 502 })
+    return new Response(`파일 업로드 중 오류가 발생했습니다: ${errorMessage}`, { status: 502 })
   }
 }
 
