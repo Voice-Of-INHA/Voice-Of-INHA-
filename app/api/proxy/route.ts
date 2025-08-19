@@ -9,20 +9,30 @@ export async function GET(req: Request) {
 
   // ✅ 백엔드 헬스 체크 (/health)
   if (path === "health") {
+    console.log("🔍 환경변수 확인:", { backendUrl })
+    
     if (!backendUrl) {
+      console.error("❌ BACKEND_URL 환경변수가 설정되지 않음")
       return new Response("백엔드 URL이 설정되지 않았습니다", { status: 500 })
     }
 
     try {
-      const res = await fetch(`${backendUrl}/voice-guard/health`, {
+      const targetUrl = `${backendUrl}/voice-guard/health`
+      console.log("📡 요청 URL:", targetUrl)
+      
+      const res = await fetch(targetUrl, {
         method: "GET",
         headers: {
           "Content-Type": "application/json",
         }
       })
       
+      console.log("📥 백엔드 응답 상태:", res.status)
+      
       if (!res.ok) {
-        throw new Error(`헬스 체크 실패: ${res.status}`)
+        const errorText = await res.text()
+        console.error("❌ 백엔드 응답 실패:", res.status, errorText)
+        throw new Error(`헬스 체크 실패: ${res.status} - ${errorText}`)
       }
       
       const data = await res.json()
@@ -30,7 +40,10 @@ export async function GET(req: Request) {
       return NextResponse.json(data)
     } catch (err) {
       console.error("❌ 백엔드 헬스 체크 실패:", err)
-      return new Response("백엔드 서버 연결 실패", { status: 500 })
+      
+      // 더 자세한 에러 정보 반환
+      const errorMessage = err instanceof Error ? err.message : String(err)
+      return new Response(`백엔드 서버 연결 실패: ${errorMessage}`, { status: 500 })
     }
   }
 
