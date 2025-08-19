@@ -5,7 +5,7 @@ export async function GET(req: Request) {
   
   const path = searchParams.get("path")
   const id = searchParams.get("id")
-  const backendUrl = process.env.BACKEND_URL
+  const backendUrl = "https://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app"
 
   // ✅ 백엔드 헬스 체크 (/health)
   if (path === "health") {
