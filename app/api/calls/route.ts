@@ -10,8 +10,8 @@ export async function POST(req: Request) {
   try {
     const callData = await req.json()
     
-    // 요청 데이터 검증
-    const requiredFields = ['phone', 'callDate', 'totalSeconds', 'riskScore', 'fraudType', 'keywords', 'audioUrl']
+    // 요청 데이터 검증 - callDate 제거
+    const requiredFields = ['phone', 'totalSeconds', 'riskScore', 'fraudType', 'keywords', 'audioUrl']
     for (const field of requiredFields) {
       if (callData[field] === undefined || callData[field] === null) {
         return new Response(`필수 필드 누락: ${field}`, { status: 400 })

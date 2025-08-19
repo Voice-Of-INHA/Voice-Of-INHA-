@@ -62,17 +62,80 @@ export default function PastListPage() {
 
     try {
       console.log("📋 분석 이력 조회 시작...")
-      const response = await fetch('/api/proxy?path=list')
-
-      if (!response.ok) {
-        const errorText = await response.text()
-        throw new Error(`서버 오류: ${response.status} - ${errorText}`)
+      
+      // 여러 엔드포인트 시도
+      let response
+      let data
+      
+      // 1차 시도: /api/calls
+      try {
+        console.log("1차 시도: /api/calls")
+        response = await fetch('/api/calls', {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+          }
+        })
+        
+        if (response.ok) {
+          data = await response.json()
+          console.log("✅ /api/calls 성공:", data)
+        } else {
+          throw new Error(`/api/calls 실패: ${response.status}`)
+        }
+      } catch (callsError) {
+        console.log("❌ /api/calls 실패:", callsError)
+        
+        // 2차 시도: proxy를 통한 list
+        try {
+          console.log("2차 시도: /api/proxy?path=list")
+          response = await fetch('/api/proxy?path=list')
+          
+          if (response.ok) {
+            data = await response.json()
+            console.log("✅ /api/proxy?path=list 성공:", data)
+          } else {
+            throw new Error(`/api/proxy?path=list 실패: ${response.status}`)
+          }
+        } catch (proxyError) {
+          console.log("❌ /api/proxy?path=list 실패:", proxyError)
+          
+          // 3차 시도: 다른 엔드포인트들
+          const fallbackEndpoints = [
+            '/api/proxy?path=calls',
+            '/api/proxy?path=records',
+            '/api/proxy?path=history'
+          ]
+          
+          let success = false
+          for (const endpoint of fallbackEndpoints) {
+            try {
+              console.log(`3차 시도: ${endpoint}`)
+              response = await fetch(endpoint)
+              if (response.ok) {
+                data = await response.json()
+                console.log(`✅ ${endpoint} 성공:`, data)
+                success = true
+                break
+              }
+            } catch (error) {
+              console.log(`❌ ${endpoint} 실패:`, error)
+            }
+          }
+          
+          if (!success) {
+            throw new Error("모든 엔드포인트 연결 실패")
+          }
+        }
       }
 
-      const data: ApiResponseItem[] = await response.json()
-      console.log("✅ 분석 이력 조회 성공:", data)
+      // 데이터가 없으면 빈 배열로 처리
+      if (!data || !Array.isArray(data)) {
+        console.log("⚠️ 데이터가 없거나 배열이 아님, 빈 배열로 처리")
+        data = []
+      }
 
-      const formattedRecords: AnalysisRecord[] = data.map((item) => {
+      const formattedRecords: AnalysisRecord[] = data.map((item: ApiResponseItem) => {
         const riskScore = item.riskScore || 0;
         const callDate = item.callDate ? formatDate(item.callDate) : new Date().toISOString().split('T')[0]
         const callDuration = item.totalSeconds ? formatDuration(item.totalSeconds) : "00분 00초"
@@ -91,6 +154,8 @@ export default function PastListPage() {
       })
       
       setRecords(formattedRecords)
+      console.log("✅ 분석 이력 조회 완료:", formattedRecords.length, "건")
+      
     } catch (error) {
       console.error("❌ 분석 이력 조회 실패:", error)
       setError(error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다")

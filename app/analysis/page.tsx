@@ -132,6 +132,7 @@ class ResamplerProcessor extends AudioWorkletProcessor {
     this.targetRate = ${TARGET_SR};
     this.ratio = this.sourceRate / this.targetRate;
     this.chunkSamples = Math.floor(${TARGET_SR} * ${CHUNK_MS} / 1000);
+    this.samplesSent = 0;
   }
   
   downsampleMono(input) {
@@ -182,12 +183,19 @@ class ResamplerProcessor extends AudioWorkletProcessor {
         const slice = merged.subarray(off, off + this.chunkSamples);
         const i16 = this.floatToInt16(slice);
         
+        // 오디오 품질 확인
+        const rms = Math.sqrt(slice.reduce((sum, val) => sum + val * val, 0) / slice.length);
+        
         // STT 서버로 바이너리 데이터 전송
         this.port.postMessage({ 
           type: 'audio_chunk', 
-          pcm16: i16.buffer 
+          pcm16: i16.buffer,
+          samples: i16.length,
+          rms: rms,
+          timestamp: currentTime
         }, [i16.buffer]);
         
+        this.samplesSent += i16.length;
         off += this.chunkSamples;
       }
       
@@ -315,29 +323,17 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           setConnectionStatus('connected')
           showToast("연결 성공", `STT 서버에 연결되었습니다`)
           
-          // 연결 직후 초기화 메시지 전송 및 핑 시작
-          try {
-            socket.send(JSON.stringify({
-              type: "init",
-              message: "클라이언트 연결 완료"
-            }))
-            console.log("초기화 메시지 전송 완료")
-            
-            // 연결 유지를 위한 핑 시작 (30초마다)
-            pingIntervalRef.current = setInterval(() => {
-              if (socket.readyState === WebSocket.OPEN) {
-                try {
-                  socket.send(JSON.stringify({ type: "ping" }))
-                  console.log("핑 전송")
-                } catch (error) {
-                  console.error("핑 전송 실패:", error)
-                }
-              }
-            }, 30000)
-            
-          } catch (error) {
-            console.log("초기화 메시지 전송 실패:", error)
-          }
+          // 백엔드가 바로 오디오 데이터를 기대하므로 초기화 메시지 없이 바로 시작
+          console.log("🎵 오디오 스트림 준비 완료")
+          
+          // 연결 유지를 위한 핑 시작 (60초마다 - 오디오가 없을 때만)
+          pingIntervalRef.current = setInterval(() => {
+            if (socket.readyState === WebSocket.OPEN) {
+              // 오디오 전송 중이 아닐 때만 텍스트 메시지로 핑
+              // 백엔드에서 텍스트 메시지를 처리할 수 있음
+              console.log("연결 유지 확인")
+            }
+          }, 60000) // 60초마다
           
           resolve(socket)
         }
@@ -345,73 +341,108 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         // 메시지 수신 처리
         socket.onmessage = (event) => {
           try {
-            console.log("📥 원본 메시지:", event.data)
+            // 백엔드에서 텍스트 메시지 수신 (STT 결과)
+            const message = event.data
+            console.log("📥 STT 결과:", message)
             
-            const msg: BackendMessage = JSON.parse(event.data)
-            console.log("📥 파싱된 메시지:", msg)
+            // [FINAL] 메시지 처리
+            if (message.includes('[FINAL]')) {
+              const finalMatch = message.match(/\[FINAL\]\s*(.+)/)
+              if (finalMatch) {
+                const transcriptText = finalMatch[1].trim()
+                setAnalysisLog(prev => prev + `통화 내용: ${transcriptText}\n`)
+              }
+            }
             
-            // STT 및 위험도 분석 결과 처리
-            if (msg.type === "transcription" || msg.type === "stt_result" || msg.type === "analysis_result") {
-              let logText = ""
-              
-              // 화자 구분이 있는 경우
-              if (msg.segments && Array.isArray(msg.segments) && msg.segments.length > 0) {
-                const lines = msg.segments.map(s => `[화자${s.speaker}] ${s.text || ""}`)
-                logText = `${msg.is_final ? '[최종]' : '[임시]'} ${lines.join(' | ')}`
-              } else if (msg.transcript || msg.text) {
-                // STT 텍스트가 있는 경우
-                const spk = (msg.speaker !== undefined && msg.speaker !== null) ? `[화자${msg.speaker}] ` : ""
-                logText = `${msg.is_final ? '[최종]' : '[임시]'} ${spk}${msg.transcript || msg.text || ""}`
-              }
-              
-              // 위험도 분석 결과가 있는 경우
-              if (msg.risk_score !== undefined) {
-                logText += ` [위험도: ${msg.risk_score}%]`
-                
-                // 감지된 라벨들 표시
-                if (msg.labels && msg.labels.length > 0) {
-                  logText += ` [라벨: ${msg.labels.join(', ')}]`
+            // [RISK] 메시지 처리 및 한글로 변환
+            if (message.includes('[RISK]')) {
+              try {
+                const riskMatch = message.match(/\[RISK\]\s*(.+)/)
+                if (riskMatch) {
+                  const riskData = JSON.parse(riskMatch[1].replace(/'/g, '"'))
+                  
+                  // 한글로 다듬어서 표시
+                  if (riskData.riskScore !== undefined) {
+                    setAnalysisLog(prev => prev + `위험도 분석: ${riskData.riskScore}점\n`)
+                  }
+                  
+                  if (riskData.fraudType) {
+                    setAnalysisLog(prev => prev + `사기 유형: ${riskData.fraudType}\n`)
+                  }
+                  
+                  if (riskData.keywords && riskData.keywords.length > 0) {
+                    setAnalysisLog(prev => prev + `감지된 키워드: ${riskData.keywords.join(', ')}\n`)
+                  }
+                  
+                  if (riskData.reason) {
+                    setAnalysisLog(prev => prev + `판단 근거: ${riskData.reason}\n`)
+                  }
+                  
+                  if (riskData.actions && riskData.actions.length > 0) {
+                    let actionsText = `권장 조치:\n`
+                    riskData.actions.forEach((action: string, index: number) => {
+                      actionsText += `  ${index + 1}. ${action}\n`
+                    })
+                    setAnalysisLog(prev => prev + actionsText)
+                  }
+                  
+                  // 분석 결과 업데이트 (새로운 형식에 맞춤)
+                  if (riskData.riskScore !== undefined) {
+                    updateAnalysisResult({
+                      type: "analysis_result",
+                      risk_score: riskData.riskScore,
+                      risk_level: getRiskLevel(riskData.riskScore), // 프론트에서 계산
+                      labels: riskData.keywords || [],
+                      reason: riskData.reason || '',
+                      evidence: [], // 백엔드에서 제공하지 않음
+                      actions: riskData.actions || []
+                    })
+                  }
                 }
+              } catch (parseError) {
+                console.log("위험도 데이터 파싱 실패:", parseError)
+                // 파싱 실패 시 원본 메시지 표시
+                setAnalysisLog(prev => prev + `${message}\n`)
+              }
+            }
+            
+            // [ACCUMULATED] 메시지 처리
+            if (message.includes('[ACCUMULATED]')) {
+              const accMatch = message.match(/누적 점수:\s*(\d+)점/)
+              if (accMatch) {
+                const accScore = parseInt(accMatch[1])
+                setAnalysisLog(prev => prev + `누적 위험도: ${accScore}점\n`)
                 
-                // 권장 행동 표시
-                if (msg.actions && msg.actions.length > 0) {
-                  logText += ` [권장: ${msg.actions.join(', ')}]`
-                }
-              }
-              
-              if (logText) {
-                setAnalysisLog(prev => prev + logText + '\n')
-              }
-              
-              // 위험도 정보가 있다면 분석 결과 업데이트
-              if (msg.risk_score !== undefined) {
-                updateAnalysisResult(msg)
+                setAnalysisResult(prev => ({
+                  ...prev,
+                  riskScore: accScore,
+                  risk: getRiskLevel(accScore),
+                  timestamp: Date.now()
+                }))
               }
             }
-            // 연결 확인 메시지 및 핑/퐁 처리
-            else if (msg.type === "connection_established" || msg.type === "ready" || msg.type === "connected" || msg.type === "pong") {
-              if (msg.type === "pong") {
-                console.log("퐁 수신 - 연결 유지됨")
-              } else {
-                console.log("✅ STT 서버 연결 확인:", msg.message)
-                setAnalysisLog(prev => prev + `[시스템] ${msg.message || "STT 서버 연결됨"}\n`)
+            
+            // [WARNING] 메시지 처리
+            if (message.includes('[WARNING]')) {
+              const warningMatch = message.match(/\[WARNING\]\s*(.+)/)
+              if (warningMatch) {
+                const warningText = warningMatch[1].trim()
+                setAnalysisLog(prev => prev + `⚠️ 경고: ${warningText}\n`)
               }
             }
-            // 오류 처리
-            else if (msg.type === "error") {
-              console.error("❌ STT 서버 오류:", msg)
-              const errorMessage = msg.message || msg.error || msg.detail || msg.description || '알 수 없는 오류'
-              setAnalysisLog(prev => prev + `[오류] ${errorMessage}\n`)
+            
+            // [ERROR] 메시지 처리
+            if (message.includes('[ERROR]')) {
+              const errorMatch = message.match(/\[ERROR\]\s*(.+)/)
+              if (errorMatch) {
+                const errorText = errorMatch[1].trim()
+                setAnalysisLog(prev => prev + `❌ 오류: ${errorText}\n`)
+              }
             }
-            // 기타 메시지
-            else {
-              console.log("ℹ️ 기타 STT 메시지:", msg)
-              setAnalysisLog(prev => prev + `[정보] ${JSON.stringify(msg)}\n`)
-            }
+            
           } catch (error) {
-            console.error("❌ 메시지 파싱 오류:", error)
+            console.error("❌ 메시지 처리 오류:", error)
             console.log("📄 원본 데이터:", event.data)
-            // JSON이 아닌 메시지도 로그에 표시
             setAnalysisLog(prev => prev + `[원본] ${event.data}\n`)
           }
         }
@@ -456,6 +487,9 @@ registerProcessor('resampler-processor', ResamplerProcessor);
             case 1003:
               closeMessage = "지원하지 않는 데이터"
               break
+            case 1005:
+              closeMessage = "클라이언트에서 연결 종료"
+              break
             case 1006:
               closeMessage = "비정상 종료 (서버 연결 거부 또는 네트워크 문제)"
               break
@@ -468,11 +502,11 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           
           setAnalysisLog(prev => prev + `[연결종료] ${closeMessage}: ${event.reason || '이유 없음'}\n`)
           
-          // 정상 종료가 아닌 경우에만 다음 URL 시도
-          if (event.code !== 1000 && urlIndex < WS_URLS.length - 1) {
+          // 사용자가 중지한 경우(1005) 또는 정상 종료(1000)는 재연결하지 않음
+          if (event.code !== 1000 && event.code !== 1005 && urlIndex < WS_URLS.length - 1) {
             console.log(`다음 URL로 재시도... (${urlIndex + 1}/${WS_URLS.length})`)
-            setTimeout(() => tryConnection(urlIndex + 1), 2000) // 2초 대기 후 재시도
-          } else if (event.code !== 1000) {
+            setTimeout(() => tryConnection(urlIndex + 1), 2000)
+          } else if (event.code !== 1000 && event.code !== 1005) {
             reject(new Error(`모든 WebSocket URL 연결 실패 - 마지막 오류: ${closeMessage}`))
           }
         }
@@ -526,8 +560,20 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       workletNode.port.onmessage = (ev) => {
         const d = ev.data
         if (d && d.type === "audio_chunk" && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          // STT 서버로 오디오 데이터 전송
-          socketRef.current.send(d.pcm16)
+          try {
+            // 백엔드가 기대하는 형식: 직접 PCM16 바이너리 데이터
+            socketRef.current.send(d.pcm16)
+            
+            // 오디오 품질 체크 및 로깅 (매우 가끔씩만)
+            if (d.rms > 0.001 && Math.random() < 0.005) { // 0.5%만 로깅
+              console.log(`🎵 오디오 전송: ${d.samples}샘플, RMS: ${d.rms?.toFixed(4)}`)
+            }
+            
+          } catch (error) {
+            console.error("오디오 데이터 전송 실패:", error)
+            const errorMessage = error instanceof Error ? error.message : String(error)
+            setAnalysisLog(prev => prev + `[오류] 오디오 전송 실패: ${errorMessage}\n`)
+          }
         }
       }
       
@@ -822,7 +868,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     setConnectionStatus('disconnected')
     setAudioLevel(0)
     
-    if (finalRiskScore >= 50) {
+    if (finalRiskScore >= 5) {
       setShowSaveModal(true)
     } else {
       recordedChunksRef.current = []
@@ -830,7 +876,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 통화 저장 함수 (새로운 플로우)
+  // 통화 저장 함수 (S3 업로드 with fallback) - callDate 제거
   const saveCall = async () => {
     if (!phoneNumber.trim()) {
       showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
@@ -846,50 +892,80 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       })
 
       const fileName = `call_${Date.now()}.webm`
+      let audioUrl = `temp://call_${Date.now()}.webm` // 기본값
 
-      // 2단계: Presigned URL 요청
-      console.log("📤 S3 업로드를 위한 Presigned URL 요청 시작")
-      const presignedResponse = await fetch(`/api/uploads/presign?fileName=${fileName}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
+      // 2단계: S3 업로드 시도 (실패 시 임시 URL 사용)
+      try {
+        // Presigned URL 요청
+        console.log("📤 S3 업로드를 위한 Presigned URL 요청 시작")
+        const presignedResponse = await fetch(`/api/uploads/presign`, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            fileName: fileName,
+            contentType: 'audio/webm'
+          })
+        })
+
+        if (presignedResponse.ok) {
+          const { presignedUrl, fileUrl } = await presignedResponse.json()
+          console.log("✅ Presigned URL 발급 성공:", fileUrl)
+
+          // S3에 파일 업로드
+          console.log("📤 S3에 파일 직접 업로드 시작")
+          console.log("업로드할 파일 크기:", recordedBlob.size, "bytes")
+          console.log("업로드 URL:", presignedUrl)
+          
+          try {
+            const s3Response = await fetch(presignedUrl, {
+              method: 'PUT',
+              body: recordedBlob,
+              headers: {
+                'Content-Type': 'audio/webm',
+              },
+            })
+
+            console.log("S3 업로드 응답 상태:", s3Response.status)
+            console.log("S3 응답 헤더:", Object.fromEntries(s3Response.headers.entries()))
+
+            if (s3Response.ok) {
+              console.log("✅ S3 업로드 성공")
+              audioUrl = fileUrl // 실제 S3 URL 사용
+            } else {
+              const errorText = await s3Response.text()
+              console.error("S3 업로드 실패:", s3Response.status, errorText)
+              throw new Error(`S3 업로드 실패: ${s3Response.status}`)
+            }
+          } catch (s3Error) {
+            console.error("S3 fetch 오류:", s3Error)
+            if (s3Error instanceof TypeError && s3Error.message.includes('fetch')) {
+              console.log("CORS 오류로 인한 S3 업로드 실패, 임시 URL 사용")
+            }
+            throw s3Error
+          }
+        } else {
+          const errorText = await presignedResponse.text()
+          console.error("Presigned URL 발급 실패:", presignedResponse.status, errorText)
+          throw new Error(`Presigned URL 발급 실패: ${presignedResponse.status}`)
         }
-      })
-
-      if (!presignedResponse.ok) {
-        throw new Error('Presigned URL 발급 실패')
+      } catch (uploadError) {
+        const errorMessage = uploadError instanceof Error ? uploadError.message : String(uploadError)
+        console.warn("⚠️ S3 업로드 실패, 임시 URL로 진행:", errorMessage)
+        // S3 업로드 실패해도 계속 진행 (임시 URL 사용)
       }
 
-      const { presignedUrl, fileUrl } = await presignedResponse.json()
-      console.log("✅ Presigned URL 발급 성공:", fileUrl)
-
-      // 3단계: S3에 파일 직접 업로드
-      console.log("📤 S3에 파일 직접 업로드 시작")
-      const s3Response = await fetch(presignedUrl, {
-        method: 'PUT',
-        body: recordedBlob,
-        headers: {
-          'Content-Type': 'audio/webm',
-        },
-      })
-
-      if (!s3Response.ok) {
-        const errorText = await s3Response.text()
-        throw new Error(`S3 업로드 실패: ${s3Response.status} - ${errorText}`)
-      }
-      console.log("✅ S3 업로드 성공")
-
-      // 4단계: 최종 통화 데이터 저장
+      // 3단계: 통화 데이터 저장 (S3 성공/실패 무관하게 진행) - callDate 제거
       console.log("📤 백엔드에 통화 기록 저장 요청 시작")
       
       const callData = {
         phone: phoneNumber.trim(),
-        callDate: new Date().toISOString().split('T')[0], // YYYY-MM-DD 형식
         totalSeconds: recordingTime, // 녹음 시간 (초)
         riskScore: analysisResult.riskScore,
         fraudType: determineFraudType(analysisResult.keywords, analysisResult.reason),
         keywords: analysisResult.keywords,
-        audioUrl: fileUrl // S3 URL
+        audioUrl: audioUrl // S3 URL 또는 임시 URL
       }
 
       console.log("전송할 통화 데이터:", callData)
@@ -910,7 +986,13 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       const result = await saveResponse.json()
       console.log("✅ 통화 기록 백엔드 저장 성공:", result)
 
-      showToast("저장 완료", "의심 통화가 성공적으로 저장되었습니다.")
+      // 성공 메시지 (S3 업로드 성공 여부에 따라 다른 메시지)
+      const isS3Upload = audioUrl.startsWith('https://')
+      const successMessage = isS3Upload 
+        ? "의심 통화가 성공적으로 저장되었습니다."
+        : "의심 통화 기록이 저장되었습니다. (오디오 파일은 S3 설정 완료 후 업로드 예정)"
+      
+      showToast("저장 완료", successMessage)
       
       // 초기화
       recordedChunksRef.current = []
