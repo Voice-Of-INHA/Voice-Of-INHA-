@@ -23,7 +23,7 @@ def list_calls_api(
     items = list_calls(
         db, phone=phone, q=q, from_date=fromDate, to_date=toDate, order=order
     )
-    return [CallResponse.model_validate(it) for it in items]
+    return [CallResponse.model_validate(it, from_attributes=True) for it in items]
 
 @router.get("/{call_id}", response_model=CallResponse)
 def get_call_api(call_id: int, db: Session = Depends(get_db)):
