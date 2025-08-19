@@ -12,6 +12,7 @@ class CallCreate(BaseModel):
 
 class CallResponse(BaseModel):
     id: int
+    phone: str
     callDate: datetime
     totalSeconds: int
     riskScore: int

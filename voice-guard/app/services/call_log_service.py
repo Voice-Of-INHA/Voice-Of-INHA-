@@ -9,6 +9,7 @@ from datetime import datetime, timezone
 
 def create_call(db: Session, body: CallCreate) -> CallLog:
     row = CallLog(
+        phone=body.phone,
         phoneHash=phone_hash(body.phone),
         callDate=datetime.now(timezone.utc),
         totalSeconds=body.totalSeconds,

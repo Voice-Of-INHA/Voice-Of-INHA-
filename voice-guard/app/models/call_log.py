@@ -7,7 +7,8 @@ class CallLog(Base):
     __tablename__ = "callLog"
 
     id: Mapped[int] = mapped_column(primary_key=True, autoincrement=True)
-    phoneHash: Mapped[str] = mapped_column(String(64))       # 전화번호는 해시 저장 권장
+    phone: Mapped[str] = mapped_column(String(20))           # 원본 번호 추가(프론트용)
+    phoneHash: Mapped[str] = mapped_column(String(64))       # 검색용 전화번호는 해시 저장 권장
     callDate: Mapped[datetime] = mapped_column(DateTime, default=lambda: datetime.now(timezone.utc))             # 2025-08-19 15:32:10+00:00
     totalSeconds: Mapped[int] = mapped_column(Integer)       # 총 통화시간(초)
     riskScore: Mapped[int] = mapped_column(Integer)          # 0~100
