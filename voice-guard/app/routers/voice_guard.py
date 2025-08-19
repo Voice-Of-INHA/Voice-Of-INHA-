@@ -4,15 +4,17 @@ import os
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from ..ai import GoogleStreamingSTT, rule_hit_labels, calculate_rule_score, VertexRiskAnalyzer
+from ..ai import GoogleStreamingSTT, rule_hit_labels, calculate_rule_score, VertexRiskAnalyzer, get_risk_level, \
+    analyze_rule_based
 
 router = APIRouter(prefix="/voice-guard", tags=["voice-guard"])
+
 
 # 자격증명/경로 설정 (voice-guard 원본 로직)
 def _setup_gcp_credentials():
     base_app = os.path.dirname(os.path.dirname(__file__))  # app/
     proj_root = os.path.dirname(base_app)  # voice-guard-merged/
-    
+
     key_candidates = [
         os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "",
         os.path.join(proj_root, "keys", "gcp-stt-key.json"),
@@ -39,20 +41,21 @@ def _setup_gcp_credentials():
         os.environ["GCP_LOCATION"] = "us-central1"
         print(f"✅ GCP_LOCATION 기본값 설정: us-central1")
 
+
 @router.get("/")
 def voice_guard_index():
     # HTML 파일 경로 후보들 (우선순위 순)
     base_app = os.path.dirname(os.path.dirname(__file__))  # app/
     proj_root = os.path.dirname(base_app)  # voice-guard-merged/
-    
+
     html_candidates = [
-        os.path.join(proj_root, "static", "stt-test.html"),      # voice-guard-merged/static/stt-test.html
-        os.path.join(proj_root, "stt-test.html"),                # voice-guard-merged/stt-test.html
+        os.path.join(proj_root, "static", "stt-test.html"),  # voice-guard-merged/static/stt-test.html
+        os.path.join(proj_root, "stt-test.html"),  # voice-guard-merged/stt-test.html
     ]
-    
+
     # 존재하는 첫 번째 파일 선택
     html_path = next((p for p in html_candidates if os.path.exists(p)), None)
-    
+
     if not html_path:
         return HTMLResponse(
             "<h1>VoiceGuard STT Test</h1>"
@@ -60,22 +63,25 @@ def voice_guard_index():
             "<p>다음 경로 중 하나에 파일을 두세요:</p>"
             "<ul>" + "".join([f"<li>{p}</li>" for p in html_candidates]) + "</ul>"
         )
-    
+
     try:
         with open(html_path, "r", encoding="utf-8") as f:
             return HTMLResponse(f.read())
     except Exception as e:
         return HTMLResponse(f"<h1>VoiceGuard STT Test</h1><p>HTML 파일 읽기 실패: {e}</p>")
 
+
 @router.get("/health")
 def voice_guard_health():
     return {"status": "ok", "service": "VoiceGuard AI"}
+
 
 @router.get("/diag/creds")
 def voice_guard_diag_creds():
     path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
     ok = bool(path and os.path.exists(path))
     return {"ok": ok, "path": path}
+
 
 @router.get("/diag/stt")
 def voice_guard_diag_stt():
@@ -85,6 +91,7 @@ def voice_guard_diag_stt():
         return {"ok": True, "msg": "SpeechClient OK"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 @router.get("/diag/vertex")
 def voice_guard_diag_vertex():
@@ -96,19 +103,21 @@ def voice_guard_diag_vertex():
             from vertexai.preview.generative_models import GenerativeModel  # type: ignore
         vertexai.init(project=_os.getenv("GCP_PROJECT_ID"), location=_os.getenv("GCP_LOCATION", "us-central1"))
         _ = GenerativeModel("gemini-1.5-flash")
-        return {"ok": True, "msg": "Vertex init OK", "project": _os.getenv("GCP_PROJECT_ID"), "location": _os.getenv("GCP_LOCATION")}
+        return {"ok": True, "msg": "Vertex init OK", "project": _os.getenv("GCP_PROJECT_ID"),
+                "location": _os.getenv("GCP_LOCATION")}
     except Exception as e:
         return {"ok": False, "error": str(e)}
+
 
 # voice-guard의 원본 STT WebSocket (그대로 유지)
 @router.websocket("/ws/stt")
 async def ws_stt(ws: WebSocket):
     await ws.accept()
     stt = None
-    
+
     # GCP 자격증명 설정
     _setup_gcp_credentials()
-    
+
     # 누적 점수 시스템
     total_risk_score = 0
     session_utterances = []
@@ -122,47 +131,49 @@ async def ws_stt(ws: WebSocket):
                     # FINAL 결과
                     text = payload.get("transcript", "")
                     await ws.send_text(f"[FINAL] {text}")
-                    
+
                     # 1단계: 룰 필터링
                     labels = rule_hit_labels(text)
                     await ws.send_text(f"[FILTER] 룰 필터 결과: {labels}")
-                    
+
                     # 2단계: 분석 실행 및 점수 계산
                     current_score = 0
-                    
+
                     if labels:  # 룰 필터에 걸린 경우
                         await ws.send_text(f"[RULE_SCORE] 룰 기반 점수 계산...")
-                        current_score = calculate_rule_score(labels)
-                        await ws.send_text(f"[RULE_SCORE] 룰 기반 위험도: {current_score}점 ({', '.join(labels)})")
+                        # 새로운 형식으로 rule filter 결과 반환
+                        rule_data = analyze_rule_based(text)
+                        current_score = rule_data.get("riskScore", 0)
+                        await ws.send_text(f"[RISK] {rule_data}")
                     else:  # 룰 필터에 걸리지 않은 경우
                         await ws.send_text(f"[ANALYSIS] LLM 분석 시작...")
                         try:
                             analyzer = VertexRiskAnalyzer()
-                            # analyze() 메서드에 필요한 매개변수 전달
-                            data = analyzer.analyze(text, session_utterances)
-                            current_score = data.get("risk_score", 0)
+                            # 현재 발화만 분석 (문맥 제한하여 이전 발화 영향 방지)
+                            data = analyzer.analyze(text, [])  # 빈 문맥으로 전달
+                            current_score = data.get("riskScore", 0)
                             await ws.send_text(f"[RISK] {data}")
                         except Exception as e:
                             await ws.send_text(f"[RISK_ERROR] {e}")
                             # LLM 분석 실패 시 명시적으로 0점 설정
                             current_score = 0
                             await ws.send_text(f"[DEBUG] LLM 분석 실패로 0점 설정")
-                    
+
                     # 디버깅: 현재 점수 확인
                     await ws.send_text(f"[DEBUG] 현재 발화 점수: {current_score}점")
-                    
+
                     # 3단계: 누적 점수 계산 및 출력
                     total_risk_score += current_score
                     session_utterances.append(text)
-                    
+
                     await ws.send_text(f"[ACCUMULATED] 누적 점수: {total_risk_score}점 (현재: +{current_score}점)")
-                    
-                    # 4단계: 위험도 단계별 경고 (조정된 임계값)
-                    if total_risk_score >= 50:
+
+                    # 4단계: 위험도 단계별 경고 (100점 체계)
+                    if total_risk_score >= 80:
                         await ws.send_text(f"[WARNING] 🚨 위험도 초과! 누적 점수: {total_risk_score}점 - 즉시 통화 종료 권장!")
-                    elif total_risk_score >= 40:
+                    elif total_risk_score >= 60:
                         await ws.send_text(f"[WARNING] ⚠️ 위험도 매우 높음! 누적 점수: {total_risk_score}점 - 즉시 경계 필요!")
-                    elif total_risk_score >= 30:
+                    elif total_risk_score >= 40:
                         await ws.send_text(f"[WARNING] ⚠️ 위험도 높음! 누적 점수: {total_risk_score}점 - 주의 필요!")
                     elif total_risk_score >= 20:
                         await ws.send_text(f"[WARNING] ⚠️ 위험도 증가! 누적 점수: {total_risk_score}점 - 경계 필요!")
@@ -172,17 +183,17 @@ async def ws_stt(ws: WebSocket):
                     # PARTIAL 결과
                     text = payload.get("transcript", "")
                     await ws.send_text(f"[PART] {text}")
-            
+
             elif payload.get("type") == "error":
                 await ws.send_text(f"[ERROR] {payload.get('message', 'Unknown error')}")
-                
+
         except Exception as e:
             await ws.send_text(f"[ERROR] on_json 처리 오류: {e}")
-    
+
     try:
         stt = GoogleStreamingSTT()
         await stt.start(on_json)
-        
+
         while True:
             # WebSocket에서 오디오 데이터 수신
             try:
@@ -200,7 +211,7 @@ async def ws_stt(ws: WebSocket):
                 except Exception as text_e:
                     print(f"WebSocket 데이터 수신 오류: {e}")
                     break
-            
+
     except WebSocketDisconnect:
         print("WebSocket 연결 종료")
     except Exception as e:

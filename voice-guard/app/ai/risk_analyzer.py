@@ -14,39 +14,44 @@ RESPONSE_SCHEMA = {
     "properties": {
         "risk_score": {"type": "INTEGER"},
         "risk_level": {"type": "STRING"},
-        "labels":     {"type": "ARRAY", "items": {"type": "STRING"}},
-        "evidence":   {"type": "ARRAY", "items": {"type": "STRING"}},
-        "reason":     {"type": "STRING"},
-        "actions":    {"type": "ARRAY", "items": {"type": "STRING"}},
+        "labels": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "evidence": {"type": "ARRAY", "items": {"type": "STRING"}},
+        "reason": {"type": "STRING"},
+        "actions": {"type": "ARRAY", "items": {"type": "STRING"}},
     },
     "required": ["risk_score", "risk_level", "labels", "evidence", "reason", "actions"],
 }
 
 SCHEMA_LABELS = [
-    "금전요구", "개인정보요구", "정부기관사칭", "원격제어유도", "링크/앱설치", "협박/압박", "의심 없음"
+    "개인정보/계정정보요구", "금전/자산이체요구", "권위기관사칭/압박", "협박/압박/위협", "링크/앱설치유도", "원격제어유도",
+    "계좌/카드정보요구", "긴급성/시간압박", "개인정보수집", "보상/혜택유도", "신뢰성구축", "의심스러운연락처", "의심 없음"
 ]
 
 SYSTEM_PROMPT = """전화사기 위험도 분석기입니다.
 
 위험 신호:
-- 협박/압박: +15점
-- 금전요구: +12점  
-- 정부기관사칭: +10점
-- 개인정보요구: +8점
-- 원격제어유도: +8점
-- 링크/앱설치유도: +5점
+- 협박/압박/위협: +20점 (협박은 위험하지만 다른 것들도 만만치 않음)
+- 금전/자산이체요구: +18점 (금전적 피해는 매우 위험)
+- 권위기관사칭/압박: +16점 (신뢰도 악용은 심각)
+- 개인정보/계정정보요구: +15점 (개인정보 유출 위험)
+- 원격제어유도: +14점 (시스템 접근은 매우 위험)
+- 계좌/카드정보요구: +13점 (금융정보 요구는 매우 위험)
+- 링크/앱설치유도: +12점 (악성코드 설치도 매우 위험)
+- 긴급성/시간압박: +10점 (시간 압박은 심리적 조작)
+- 개인정보수집: +9점 (개인정보 수집 시도)
+- 보상/혜택유도: +8점 (유혹적 보상 제시)
+- 신뢰성구축: +7점 (신뢰감 조성 시도)
+- 의심스러운연락처: +6점 (의심스러운 연락처)
 
-위험도: HIGH(30+), MID(15-29), LOW(14-)
-
-반드시 다음 JSON 형식만 출력하세요. 다른 텍스트는 포함하지 마세요:
+반드시 다음 JSON 형식만 출력하세요. 반드시 형식을 유지해야합니다. 다른 텍스트는 절대 포함하지 마세요:
 {
-  "risk_score": 0-50,
-  "risk_level": "LOW|MID|HIGH", 
-  "labels": ["위험신호"],
-  "evidence": ["문장조각"],
+  "riskScore": 0-100,
+  "fraudType": "위험신호유형",
+  "keywords": ["감지된키워드"],
   "reason": "판단근거",
   "actions": ["권고사항"]
 }"""
+
 
 def _build_client() -> genai.Client:
     project = os.getenv("GCP_PROJECT_ID")
@@ -55,6 +60,7 @@ def _build_client() -> genai.Client:
         raise RuntimeError("GCP_PROJECT_ID 환경변수를 설정하세요.")
     # Vertex 경유
     return genai.Client(vertexai=True, project=project, location=location)
+
 
 def _default_result(reason: str) -> Dict[str, Any]:
     return {
@@ -65,6 +71,7 @@ def _default_result(reason: str) -> Dict[str, Any]:
         "reason": reason[:300],
         "actions": ["의심 시 공식 채널로 직접 확인"],
     }
+
 
 def _strip_code_fences(text: str) -> str:
     """```json ... ``` 또는 ``` ... ```로 감싼 응답에서 순수 JSON만 추출"""
@@ -81,6 +88,7 @@ def _strip_code_fences(text: str) -> str:
     if last != -1:
         s = s[: last + 1]
     return s.strip()
+
 
 def _safe_load_json(text: str) -> Dict[str, Any]:
     """가능하면 그대로, 안되면 펜스 제거 후, 그래도 안되면 기본값"""
@@ -134,7 +142,7 @@ def _safe_load_json(text: str) -> Dict[str, Any]:
             if score_match:
                 score = score_match.group(1)
                 partial_json = f'{{"risk_score": {score}}}'
-        
+
         if partial_json != "{}":
             return json.loads(partial_json)
     except Exception as e:
@@ -142,21 +150,23 @@ def _safe_load_json(text: str) -> Dict[str, Any]:
 
     raise ValueError("LLM JSON 파싱 실패")
 
+
 class VertexRiskAnalyzer:
     """기존 클래스명 유지(호출부 변경 없이 교체 가능)"""
+
     def __init__(self, model_name: str = "gemini-2.5-flash"):
         self.client = _build_client()
         self.model_name = model_name
 
     @staticmethod
     def _build_user_prompt(
-        final_text: str,
-        recent_utts: List[str],
-        asr_conf: Optional[float] = None,
-        snippets: Optional[List[str]] = None,
+            final_text: str,
+            recent_utts: List[str],
+            asr_conf: Optional[float] = None,
+            snippets: Optional[List[str]] = None,
     ) -> str:
         ctx = "\n".join([f"- {u}" for u in recent_utts[-5:]]) if recent_utts else "(없음)"
-        snips = "\n".join([f"{i+1}) {s}" for i, s in enumerate(snippets or [])]) or "(없음)"
+        snips = "\n".join([f"{i + 1}) {s}" for i, s in enumerate(snippets or [])]) or "(없음)"
         return f"""[최근 문맥(최대 5문장)]
 {ctx}
 
@@ -193,11 +203,11 @@ class VertexRiskAnalyzer:
         return response_text
 
     def analyze(
-        self,
-        final_text: str,
-        recent_utts: List[str],
-        asr_conf: Optional[float] = None,
-        snippets: Optional[List[str]] = None,
+            self,
+            final_text: str,
+            recent_utts: List[str],
+            asr_conf: Optional[float] = None,
+            snippets: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         user_prompt = self._build_user_prompt(final_text, recent_utts, asr_conf, snippets)
 
@@ -249,33 +259,29 @@ class VertexRiskAnalyzer:
             return _default_result(f"LLM JSON 파싱 실패: {type(e).__name__}: {e}")
 
         # 후처리(스키마 보정)
-        score = int(max(0, min(50, int(data.get("risk_score", 0)))))
-        level = data.get("risk_level")
-        if level not in ["LOW", "MID", "HIGH"]:
-            level = "HIGH" if score >= 30 else ("MID" if score >= 15 else "LOW")
-        labels = [l for l in data.get("labels", []) if l in SCHEMA_LABELS] or ["의심 없음"]
-        evidence = data.get("evidence", [])[:3]
+        score = int(max(0, min(100, int(data.get("riskScore", 0)))))
+        fraud_type = data.get("fraudType", "의심 없음")
+        keywords = data.get("keywords", [])[:5]
         actions = data.get("actions", [])[:3]
         reason = (data.get("reason", "") or "")[:300]
 
-        # 추가 검증: 점수가 0이 아닌데 라벨이 "의심 없음"이면 조정
-        if score > 0 and labels == ["의심 없음"]:
-            labels = ["위험 신호 감지"]
-        
-        # 추가 검증: 점수가 0인데 위험 라벨이 있으면 조정
-        if score == 0 and any(l != "의심 없음" for l in labels):
-            labels = ["의심 없음"]
+        # 추가 검증: 점수가 0이 아닌데 fraudType이 "의심 없음"이면 조정
+        if score > 0 and fraud_type == "의심 없음":
+            fraud_type = "위험 신호 감지"
+
+        # 추가 검증: 점수가 0인데 위험 fraudType이 있으면 조정
+        if score == 0 and fraud_type != "의심 없음":
+            fraud_type = "의심 없음"
 
         # 디버깅
         print(f"[DEBUG] LLM 원본 데이터: {data}")
         print(f"[DEBUG] 계산된 점수: {score}")
-        print(f"[DEBUG] 최종 라벨: {labels}")
+        print(f"[DEBUG] 최종 fraudType: {fraud_type}")
 
         return {
-            "risk_score": score,
-            "risk_level": level,
-            "labels": labels,
-            "evidence": evidence,
+            "riskScore": score,
+            "fraudType": fraud_type,
+            "keywords": keywords,
             "reason": reason,
             "actions": actions,
         }
