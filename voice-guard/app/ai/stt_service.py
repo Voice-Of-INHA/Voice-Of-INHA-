@@ -3,6 +3,7 @@ import asyncio
 import queue
 import threading
 import traceback
+import time
 from typing import Optional
 
 from google.cloud import speech_v1 as speech
@@ -42,12 +43,16 @@ class GoogleStreamingSTT:
     on_json(payload): 코루틴. {"type":"stt_update","is_final":bool,"transcript":str,"confidence":float|None}
                       오류 시 {"type":"error","stage":"stt","message":..., "trace":...}
     """
-    def __init__(self, sample_rate_hz: int = 16000):
+    def __init__(self, sample_rate_hz: int = 16000, analysis_interval: float = 7.0):
         self.client = speech.SpeechClient()
         self.streaming_config = build_streaming_config(sample_rate_hz=sample_rate_hz)
         self._audio_q: "queue.Queue[Optional[bytes]]" = queue.Queue(maxsize=64)
-        self._running = False
+        self._running = False   
         self._thread: Optional[threading.Thread] = None
+        self._analysis_interval = analysis_interval  # 분석 간격 (초)
+        self._last_analysis_time = 0
+        self._current_transcript = ""
+        self._analysis_thread: Optional[threading.Thread] = None
 
     def _request_generator(self):
         from google.cloud.speech_v1 import StreamingRecognizeRequest
@@ -57,6 +62,26 @@ class GoogleStreamingSTT:
             if chunk is None:
                 break
             yield StreamingRecognizeRequest(audio_content=chunk)
+
+    async def _periodic_analysis(self, on_json):
+        """주기적으로 현재 transcript를 분석"""
+        while self._running:
+            try:
+                await asyncio.sleep(self._analysis_interval)
+                if self._running and self._current_transcript.strip():
+                    current_time = time.time()
+                    if current_time - self._last_analysis_time >= self._analysis_interval:
+                        # 현재 transcript로 분석 실행
+                        payload = {
+                            "type": "time_based_analysis",
+                            "transcript": self._current_transcript.strip(),
+                            "timestamp": current_time
+                        }
+                        await on_json(payload)
+                        self._last_analysis_time = current_time
+            except Exception as e:
+                print(f"주기적 분석 오류: {e}")
+                await asyncio.sleep(1)  # 오류 시 잠시 대기
 
     async def start(self, on_json):
         self._running = True
@@ -74,10 +99,19 @@ class GoogleStreamingSTT:
                         if not result.alternatives:
                             continue
                         alt = result.alternatives[0]
+                        transcript = clean_text(alt.transcript)
+                        
+                        # 현재 transcript 업데이트
+                        if result.is_final:
+                            self._current_transcript = transcript
+                        else:
+                            # interim 결과는 누적하지 않고 현재 상태만 반영
+                            self._current_transcript = transcript
+                        
                         payload = {
                             "type": "stt_update",
                             "is_final": result.is_final,
-                            "transcript": clean_text(alt.transcript),
+                            "transcript": transcript,
                             "confidence": getattr(alt, "confidence", None),
                         }
                         asyncio.run_coroutine_threadsafe(on_json(payload), loop)
@@ -90,6 +124,9 @@ class GoogleStreamingSTT:
 
         self._thread = threading.Thread(target=consume, daemon=True)
         self._thread.start()
+        
+        # 주기적 분석 스레드 시작
+        asyncio.create_task(self._periodic_analysis(on_json))
 
     def feed_audio(self, pcm_chunk: bytes):
         if self._running:
