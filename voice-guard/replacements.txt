@@ -1,0 +1,3 @@
+literal:AKIA35CHFWYGPJMVZI6R==>REDACTED_AWS_ACCESS_KEY_ID
+literal:PKk3EHAOy38X37oAQJ4NHx0dOn5In2lG0PXw3H5y==>REDACTED_AWS_SECRET
+literal:mysql+pymysql://root:Helena0822%40@127.0.0.1:3306/voice_of_inha?charset=utf8mb4==>mysql+pymysql://<user>:<pass>@<host>:<port>/<db>?charset=utf8mb4
