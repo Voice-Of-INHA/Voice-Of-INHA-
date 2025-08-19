@@ -83,13 +83,12 @@ export default function AnalysisPage() {
   const recordingTimerRef = useRef<NodeJS.Timeout | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
   const recordedChunksRef = useRef<Blob[]>([])
+  const pingIntervalRef = useRef<NodeJS.Timeout | null>(null)
 
-  // 환경 설정 - CloudType 도메인 사용
+  // 환경 설정 - voice-guard 경로 포함
   const WS_URLS = [
-    "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
-    "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt",
-    "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
-    "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt"
+    "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/voice-guard/ws/stt",
+    "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/voice-guard/ws/stt"
   ]
   const CHUNK_MS = 500
   const TARGET_SR = 16000
@@ -315,6 +314,31 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           socketRef.current = socket
           setConnectionStatus('connected')
           showToast("연결 성공", `STT 서버에 연결되었습니다`)
+          
+          // 연결 직후 초기화 메시지 전송 및 핑 시작
+          try {
+            socket.send(JSON.stringify({
+              type: "init",
+              message: "클라이언트 연결 완료"
+            }))
+            console.log("초기화 메시지 전송 완료")
+            
+            // 연결 유지를 위한 핑 시작 (30초마다)
+            pingIntervalRef.current = setInterval(() => {
+              if (socket.readyState === WebSocket.OPEN) {
+                try {
+                  socket.send(JSON.stringify({ type: "ping" }))
+                  console.log("핑 전송")
+                } catch (error) {
+                  console.error("핑 전송 실패:", error)
+                }
+              }
+            }, 30000)
+            
+          } catch (error) {
+            console.log("초기화 메시지 전송 실패:", error)
+          }
+          
           resolve(socket)
         }
 
@@ -364,10 +388,14 @@ registerProcessor('resampler-processor', ResamplerProcessor);
                 updateAnalysisResult(msg)
               }
             }
-            // 연결 확인 메시지
-            else if (msg.type === "connection_established" || msg.type === "ready" || msg.type === "connected") {
-              console.log("✅ STT 서버 연결 확인:", msg.message)
-              setAnalysisLog(prev => prev + `[시스템] ${msg.message || "STT 서버 연결됨"}\n`)
+            // 연결 확인 메시지 및 핑/퐁 처리
+            else if (msg.type === "connection_established" || msg.type === "ready" || msg.type === "connected" || msg.type === "pong") {
+              if (msg.type === "pong") {
+                console.log("퐁 수신 - 연결 유지됨")
+              } else {
+                console.log("✅ STT 서버 연결 확인:", msg.message)
+                setAnalysisLog(prev => prev + `[시스템] ${msg.message || "STT 서버 연결됨"}\n`)
+              }
             }
             // 오류 처리
             else if (msg.type === "error") {
@@ -413,14 +441,39 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           
           setConnectionStatus('disconnected')
           
-          // 정상 종료가 아닌 경우
-          if (event.code !== 1000) {
-            setAnalysisLog(prev => prev + `[시스템] 연결 종료: ${event.code} ${event.reason}\n`)
-            
-            // 연결 시도 중이었다면 다음 URL로 시도
-            if (urlIndex < WS_URLS.length - 1) {
-              setTimeout(() => tryConnection(urlIndex + 1), 1000)
-            }
+          // 연결 종료 코드별 상세 메시지
+          let closeMessage = ""
+          switch(event.code) {
+            case 1000:
+              closeMessage = "정상 종료"
+              break
+            case 1001:
+              closeMessage = "서버 종료"
+              break
+            case 1002:
+              closeMessage = "프로토콜 오류"
+              break
+            case 1003:
+              closeMessage = "지원하지 않는 데이터"
+              break
+            case 1006:
+              closeMessage = "비정상 종료 (서버 연결 거부 또는 네트워크 문제)"
+              break
+            case 1011:
+              closeMessage = "서버 내부 오류"
+              break
+            default:
+              closeMessage = `알 수 없는 오류 (${event.code})`
+          }
+          
+          setAnalysisLog(prev => prev + `[연결종료] ${closeMessage}: ${event.reason || '이유 없음'}\n`)
+          
+          // 정상 종료가 아닌 경우에만 다음 URL 시도
+          if (event.code !== 1000 && urlIndex < WS_URLS.length - 1) {
+            console.log(`다음 URL로 재시도... (${urlIndex + 1}/${WS_URLS.length})`)
+            setTimeout(() => tryConnection(urlIndex + 1), 2000) // 2초 대기 후 재시도
+          } else if (event.code !== 1000) {
+            reject(new Error(`모든 WebSocket URL 연결 실패 - 마지막 오류: ${closeMessage}`))
           }
         }
 
@@ -532,10 +585,8 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     console.log("🧪 WebSocket 연결 테스트 시작...")
     
     const testUrls = [
-      "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
-      "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt",
-      "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt/",
-      "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/ws/stt"
+      "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/voice-guard/ws/stt",
+      "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/voice-guard/ws/stt"
     ]
 
     for (const url of testUrls) {
@@ -756,6 +807,11 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       socketRef.current = null
     }
 
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current)
+      pingIntervalRef.current = null
+    }
+
     if (animationFrameRef.current) {
       cancelAnimationFrame(animationFrameRef.current)
       animationFrameRef.current = null
@@ -911,6 +967,11 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           socketRef.current = null
         }
 
+        if (pingIntervalRef.current) {
+          clearInterval(pingIntervalRef.current)
+          pingIntervalRef.current = null
+        }
+
         if (animationFrameRef.current) {
           cancelAnimationFrame(animationFrameRef.current)
           animationFrameRef.current = null
@@ -920,6 +981,9 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           clearInterval(recordingTimerRef.current)
           recordingTimerRef.current = null
         }
+
+        // 녹음 데이터 정리
+        recordedChunksRef.current = []
       }
     }
   }, [isActive])
