@@ -4,7 +4,7 @@ import os
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 
-from ..ai import GoogleStreamingSTT, rule_hit_labels, calculate_rule_score, VertexRiskAnalyzer
+from ..ai import GoogleStreamingSTT, rule_hit_labels, calculate_rule_score, VertexRiskAnalyzer, get_risk_level, analyze_rule_based
 
 router = APIRouter(prefix="/voice-guard", tags=["voice-guard"])
 
@@ -132,15 +132,17 @@ async def ws_stt(ws: WebSocket):
                     
                     if labels:  # 룰 필터에 걸린 경우
                         await ws.send_text(f"[RULE_SCORE] 룰 기반 점수 계산...")
-                        current_score = calculate_rule_score(labels)
-                        await ws.send_text(f"[RULE_SCORE] 룰 기반 위험도: {current_score}점 ({', '.join(labels)})")
+                        # 새로운 형식으로 rule filter 결과 반환
+                        rule_data = analyze_rule_based(text)
+                        current_score = rule_data.get("riskScore", 0)
+                        await ws.send_text(f"[RISK] {rule_data}")
                     else:  # 룰 필터에 걸리지 않은 경우
                         await ws.send_text(f"[ANALYSIS] LLM 분석 시작...")
                         try:
                             analyzer = VertexRiskAnalyzer()
-                            # analyze() 메서드에 필요한 매개변수 전달
-                            data = analyzer.analyze(text, session_utterances)
-                            current_score = data.get("risk_score", 0)
+                            # 현재 발화만 분석 (문맥 제한하여 이전 발화 영향 방지)
+                            data = analyzer.analyze(text, [])  # 빈 문맥으로 전달
+                            current_score = data.get("riskScore", 0)
                             await ws.send_text(f"[RISK] {data}")
                         except Exception as e:
                             await ws.send_text(f"[RISK_ERROR] {e}")
@@ -157,12 +159,12 @@ async def ws_stt(ws: WebSocket):
                     
                     await ws.send_text(f"[ACCUMULATED] 누적 점수: {total_risk_score}점 (현재: +{current_score}점)")
                     
-                    # 4단계: 위험도 단계별 경고 (조정된 임계값)
-                    if total_risk_score >= 50:
+                    # 4단계: 위험도 단계별 경고 (100점 체계)
+                    if total_risk_score >= 80:
                         await ws.send_text(f"[WARNING] 🚨 위험도 초과! 누적 점수: {total_risk_score}점 - 즉시 통화 종료 권장!")
-                    elif total_risk_score >= 40:
+                    elif total_risk_score >= 60:
                         await ws.send_text(f"[WARNING] ⚠️ 위험도 매우 높음! 누적 점수: {total_risk_score}점 - 즉시 경계 필요!")
-                    elif total_risk_score >= 30:
+                    elif total_risk_score >= 40:
                         await ws.send_text(f"[WARNING] ⚠️ 위험도 높음! 누적 점수: {total_risk_score}점 - 주의 필요!")
                     elif total_risk_score >= 20:
                         await ws.send_text(f"[WARNING] ⚠️ 위험도 증가! 누적 점수: {total_risk_score}점 - 경계 필요!")
