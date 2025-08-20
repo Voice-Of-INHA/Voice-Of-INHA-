@@ -1,3 +1,4 @@
+// AnalysisControlPanel.tsx
 interface AnalysisControlPanelProps {
   isActive: boolean
   connectionStatus: 'disconnected' | 'connecting' | 'connected' | 'error'
@@ -15,7 +16,6 @@ export default function AnalysisControlPanel({
   onStartAnalysis,
   onStopAnalysis
 }: AnalysisControlPanelProps) {
-  // 시간 포맷팅 함수
   const formatTime = (seconds: number) => {
     const mins = Math.floor(seconds / 60)
     const secs = seconds % 60
@@ -26,7 +26,8 @@ export default function AnalysisControlPanel({
     <div>
       <h2 className="text-xl font-semibold text-white mb-4">🔍 실시간 분석 + 📹 MP3 녹음</h2>
       
-      <div className="text-center mb-4">
+      <div className="text-center mb-4 space-y-3">
+        {/* 실시간 분석 + 녹음 시작/중지 버튼 */}
         <button
           onClick={isActive ? onStopAnalysis : onStartAnalysis}
           disabled={connectionStatus === 'connecting'}

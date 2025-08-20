@@ -2,17 +2,13 @@
 
 import { useState, useRef, useEffect } from "react"
 import HelpModal from "../components/modals/HelpModal"
-import AnalysisControlPanel from "./panels/AnalysisControlPanel"
-import RiskStatusPanel from "./panels/RiskStatusPanel"
-import AnalysisLogPanel from "./panels/AnalysisLogPanel"
-import SaveCallModal from "./panels/SaveCallModal"
+import AnalysisControlPanel from "../analysis/panels/AnalysisControlPanel"
+import RiskStatusPanel from "../analysis/panels/RiskStatusPanel"
+import AnalysisLogPanel from "../analysis/panels/AnalysisLogPanel"
+import SaveCallModal from "../analysis/panels/SaveCallModal"
 
 // Safari 구형 브라우저 지원을 위한 타입 확장
-declare global {
-  interface Window {
-    webkitAudioContext?: typeof AudioContext
-  }
-}
+
 
 interface AnalysisResult {
   risk: 'low' | 'medium' | 'high' | null
@@ -49,9 +45,24 @@ interface BackendMessage {
 }
 
 export default function AnalysisPage() {
+  // 녹음 상태
+  const [audioUrl, setAudioUrl] = useState<string | undefined>()
+  const [recordingBlob, setRecordingBlob] = useState<Blob | null>(null)
+  const [isRecording, setIsRecording] = useState(false)
+  const [isUploading, setIsUploading] = useState(false)
+  const [uploadSuccess, setUploadSuccess] = useState(false)
+  const [isPlaying, setIsPlaying] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const [fileUrl, setFileUrl] = useState<string | null>(null)
+  const [recordingSeconds, setRecordingSeconds] = useState(0)
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null)
+
+  const audioChunksRef = useRef<Blob[]>([])
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+
+
   // 통합 녹음/분석 관련 상태
   const [isActive, setIsActive] = useState(false)
-  const [recordingTime, setRecordingTime] = useState(0)
   const [audioLevel, setAudioLevel] = useState(0)
   
   // 연결 상태
@@ -66,6 +77,208 @@ export default function AnalysisPage() {
     reason: '',
     timestamp: 0
   })
+
+  const startRecording = async () => {
+    try {
+      setError(null)
+      setUploadSuccess(false)
+      setFileUrl(null)
+      setRecordingSeconds(0)
+
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
+      const mediaRecorder = new MediaRecorder(stream)
+      mediaRecorderRef.current = mediaRecorder
+      audioChunksRef.current = []
+
+      mediaRecorder.ondataavailable = (event) => {
+        if (event.data.size > 0) {
+          audioChunksRef.current.push(event.data)
+        }
+      }
+
+      mediaRecorder.onstop = () => {
+        const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/mpeg' })
+        setRecordingBlob(audioBlob)
+        setAudioUrl(URL.createObjectURL(audioBlob))
+        stream.getTracks().forEach((track) => track.stop())
+
+        // ⏱️ 타이머 종료
+        if (timerRef.current) {
+          clearInterval(timerRef.current)
+          timerRef.current = null
+        }
+      }
+
+      mediaRecorder.start(1000)
+      setIsRecording(true)
+
+      // ⏱️ 타이머 시작
+      timerRef.current = setInterval(() => {
+        setRecordingSeconds((s) => s + 1)
+      }, 1000)
+    } catch (error) {
+      console.error('녹음 시작 실패:', error)
+      setError('마이크 권한을 확인해주세요.')
+    }
+  }
+
+  const stopRecording = () => {
+    mediaRecorderRef.current?.stop()
+    setIsRecording(false)
+    
+    // 녹음만 모드일 때는 타이머만 종료
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
+  const uploadToS3 = async () => {
+    if (!recordingBlob) {
+      setError('녹음 파일이 없습니다.')
+      return
+    }
+
+    setIsUploading(true)
+    setError(null)
+
+    try {
+      // 1. Presigned URL 요청
+      const fileName = `recording_${Date.now()}.mp3`
+
+      const presignResponse = await fetch('/api/uploads/presign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName,
+          contentType: 'audio/mpeg',
+        }),
+      })
+
+      if (!presignResponse.ok) {
+        const errorText = await presignResponse.text()
+        throw new Error(`Presigned URL 요청 실패: ${presignResponse.status} - ${errorText}`)
+      }
+
+      const { presignedUrl, fileUrl: finalUrl } = await presignResponse.json()
+      console.log('✅ Presigned URL 받음:', { presignedUrl, fileUrl: finalUrl })
+
+      // 2. S3에 직접 업로드
+      const uploadResponse = await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'audio/mpeg',
+        },
+        body: recordingBlob,
+      })
+
+      if (!uploadResponse.ok) {
+        const errorText = await uploadResponse.text()
+        throw new Error(`S3 업로드 실패: ${uploadResponse.status} - ${errorText}`)
+      }
+
+      console.log('✅ S3 업로드 성공!', finalUrl)
+      setFileUrl(finalUrl)
+      setUploadSuccess(true)
+    } catch (error) {
+      console.error('업로드 실패:', error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      setError(`업로드 실패: ${errorMessage}`)
+    } finally {
+      setIsUploading(false)
+    }
+  }
+
+  const saveToBackend = async (phoneNumber: string, fileUrl: string) => {
+    try {
+      if (!fileUrl) {
+        setError('먼저 S3 업로드를 완료해주세요.')
+        return
+      }
+      if (!phoneNumber.trim()) {
+        setError('전화번호를 입력해주세요.')
+        return
+      }
+      setIsSaving(true)
+      setError(null)
+
+      // 사기 유형 결정 함수
+      const determineFraudType = (keywords: string[], reason: string): string => {
+        const keywordStr = keywords.join(' ').toLowerCase()
+        const reasonStr = reason.toLowerCase()
+        
+        if (keywordStr.includes('검찰') || reasonStr.includes('검찰')) return '검찰사칭'
+        if (keywordStr.includes('경찰') || reasonStr.includes('경찰')) return '경찰사칭'
+        if (keywordStr.includes('은행') || keywordStr.includes('계좌')) return '금융사기'
+        if (keywordStr.includes('택배') || keywordStr.includes('배송')) return '택배사기'
+        if (keywordStr.includes('대출')) return '대출사기'
+        return '기타사기'
+      }
+
+      const payload = {
+        phone: phoneNumber.trim(),
+        totalSeconds: recordingSeconds,
+        // 실시간 분석 결과 사용
+        riskScore: analysisResult.riskScore,
+        fraudType: determineFraudType(analysisResult.keywords, analysisResult.reason),
+        keywords: analysisResult.keywords,
+        audioUrl: fileUrl,
+      }
+
+      const res = await fetch('/api/calls', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      })
+
+      if (!res.ok) {
+        const t = await res.text()
+        throw new Error(`백엔드 저장 실패: ${res.status} - ${t}`)
+      }
+
+      alert('저장 완료: 통화 기록이 서버에 저장되었습니다.')
+      // 저장 후 초기화
+      setPhoneNumber('')
+      setShowSaveModal(false)
+      setRecordingBlob(null)
+      setAudioUrl(undefined)
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      setError(msg)
+    } finally {
+      setIsSaving(false)
+    }
+  }
+
+  const resetRecording = () => {
+    setAudioUrl(undefined)
+    setRecordingBlob(null)
+    setUploadSuccess(false)
+    setError(null)
+    setIsPlaying(false)
+    setFileUrl(null)
+    setRecordingSeconds(0)
+    
+    // 분석 상태도 초기화
+    setAnalysisLog('')
+    setAnalysisResult({
+      risk: null,
+      riskScore: 0,
+      keywords: [],
+      reason: '',
+      timestamp: 0
+    })
+
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current.currentTime = 0
+    }
+    if (timerRef.current) {
+      clearInterval(timerRef.current)
+      timerRef.current = null
+    }
+  }
+
   
   // 모달 관련 상태
   const [showSaveModal, setShowSaveModal] = useState(false)
@@ -106,19 +319,6 @@ export default function AnalysisPage() {
     if (score >= 70) return 'high'
     if (score >= 50) return 'medium'
     return 'low'
-  }
-
-  // 사기 유형 결정 함수
-  const determineFraudType = (keywords: string[], reason: string): string => {
-    const keywordStr = keywords.join(' ').toLowerCase()
-    const reasonStr = reason.toLowerCase()
-    
-    if (keywordStr.includes('검찰') || reasonStr.includes('검찰')) return '검찰사칭'
-    if (keywordStr.includes('경찰') || reasonStr.includes('경찰')) return '경찰사칭'
-    if (keywordStr.includes('은행') || keywordStr.includes('계좌')) return '금융사기'
-    if (keywordStr.includes('택배') || keywordStr.includes('배송')) return '택배사기'
-    if (keywordStr.includes('대출')) return '대출사기'
-    return '기타사기'
   }
 
   // AudioWorklet 코드 생성
@@ -224,13 +424,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 녹음 시간 업데이트
-  const startRecordingTimer = () => {
-    setRecordingTime(0)
-    recordingTimerRef.current = setInterval(() => {
-      setRecordingTime(prev => prev + 1)
-    }, 1000)
-  }
 
   const stopRecordingTimer = () => {
     if (recordingTimerRef.current) {
@@ -529,20 +722,20 @@ registerProcessor('resampler-processor', ResamplerProcessor);
   // 오디오 스트림 초기화
   const initializeAudioStream = async (): Promise<MediaStream> => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
-          sampleRate: 48000
-        },
-        video: false
-      })
+             const stream = await navigator.mediaDevices.getUserMedia({ 
+         audio: {
+           channelCount: 1,
+           echoCancellation: true,
+           noiseSuppression: true,
+           autoGainControl: false,
+           sampleRate: 48000
+         },
+         video: false
+       })
       
       streamRef.current = stream
 
-      const AudioContextClass = window.AudioContext || window.webkitAudioContext || AudioContext
+      const AudioContextClass = window.AudioContext || AudioContext
       audioContextRef.current = new AudioContextClass({ sampleRate: 48000 })
       
       analyserRef.current = audioContextRef.current.createAnalyser()
@@ -588,43 +781,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // MediaRecorder 초기화
-  const initializeMediaRecorder = (stream: MediaStream) => {
-    const mimeType = MediaRecorder.isTypeSupported("audio/webm;codecs=opus") 
-      ? "audio/webm;codecs=opus"
-      : MediaRecorder.isTypeSupported("audio/webm")
-      ? "audio/webm"
-      : "audio/mp4"
-
-    const mediaRecorder = new MediaRecorder(stream, {
-      mimeType: mimeType,
-      audioBitsPerSecond: 16000
-    })
-
-    mediaRecorderRef.current = mediaRecorder
-    recordedChunksRef.current = []
-
-    mediaRecorder.ondataavailable = (event) => {
-      if (event.data.size > 0) {
-        recordedChunksRef.current.push(event.data)
-      }
-    }
-
-    mediaRecorder.onstart = () => {
-      console.log("녹음 시작")
-    }
-
-    mediaRecorder.onstop = () => {
-      console.log("녹음 중지")
-    }
-
-    mediaRecorder.onerror = (error) => {
-      console.error("MediaRecorder 오류:", error)
-      showToast("녹음 오류", "녹음 중 오류가 발생했습니다.", "destructive")
-    }
-
-    return mediaRecorder
-  }
 
   // WebSocket 연결 테스트 함수
   const testWebSocketConnection = async () => {
@@ -731,12 +887,8 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     // 오디오 스트림만 시작 (WebSocket 없이)
     try {
       const stream = await initializeAudioStream()
-      const mediaRecorder = initializeMediaRecorder(stream)
       
-      mediaRecorder.start(250)
-      measureAudioLevel()
-      startRecordingTimer()
-      
+      measureAudioLevel()      
       setConnectionStatus('connected')
       showToast("대체 모드 시작", "녹음 모드로 시작되었습니다.")
       
@@ -746,12 +898,17 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-  // 통합 시작 함수 (대체 방안 포함)
+  // 실시간 분석 시작 함수
   const startAnalysis = async () => {
     try {
       setConnectionStatus('connecting')
       setIsActive(true)
+      setIsRecording(true)
       setAnalysisLog('')
+      setError(null)
+      setUploadSuccess(false)
+      setFileUrl(null)
+      setRecordingSeconds(0)
       
       setAnalysisResult({
         risk: null,
@@ -780,52 +937,81 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         console.log("🚀 WebSocket 모드로 시작")
         await initializeWebSocket()
         const stream = await initializeAudioStream()
-        const mediaRecorder = initializeMediaRecorder(stream)
         
-        mediaRecorder.start(250)
+        // MP3 녹음 시작
+        const mediaRecorder = new MediaRecorder(stream)
+        mediaRecorderRef.current = mediaRecorder
+        audioChunksRef.current = []
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data)
+          }
+        }
+
+        mediaRecorder.onstop = () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/mpeg' })
+          setRecordingBlob(audioBlob)
+          setAudioUrl(URL.createObjectURL(audioBlob))
+        }
+
+        mediaRecorder.start(1000)
         measureAudioLevel()
-        startRecordingTimer()
         
-        showToast("분석 시작", "실시간 WebSocket 분석이 시작되었습니다.")
+        // 녹음 타이머 시작
+        timerRef.current = setInterval(() => {
+          setRecordingSeconds((s) => s + 1)
+        }, 1000)
+        
+        showToast("분석 시작", "실시간 WebSocket 분석과 MP3 녹음이 시작되었습니다.")
       } else {
         // WebSocket 실패 - 녹음만 모드
         console.log("🔄 녹음 전용 모드로 시작")
         await startHttpPollingMode()
+        
+        // MP3 녹음 시작
+        const stream = await initializeAudioStream()
+        const mediaRecorder = new MediaRecorder(stream)
+        mediaRecorderRef.current = mediaRecorder
+        audioChunksRef.current = []
+
+        mediaRecorder.ondataavailable = (event) => {
+          if (event.data.size > 0) {
+            audioChunksRef.current.push(event.data)
+          }
+        }
+
+        mediaRecorder.onstop = () => {
+          const audioBlob = new Blob(audioChunksRef.current, { type: 'audio/mpeg' })
+          setRecordingBlob(audioBlob)
+          setAudioUrl(URL.createObjectURL(audioBlob))
+        }
+
+        mediaRecorder.start(1000)
+        measureAudioLevel()
+        
+        // 녹음 타이머 시작
+        timerRef.current = setInterval(() => {
+          setRecordingSeconds((s) => s + 1)
+        }, 1000)
       }
       
     } catch (error) {
       console.error("❌ 모든 연결 방식 실패:", error)
       setIsActive(false)
+      setIsRecording(false)
       setConnectionStatus('error')
       
       if (error instanceof Error) {
         showToast("시작 실패", `연결 실패: ${error.message}`, "destructive")
         setAnalysisLog(prev => prev + `[오류] ${error.message}\n`)
       }
-      
-      // 마지막 시도: 녹음만이라도 시작
-      try {
-        console.log("📹 녹음만 모드로 시작...")
-        const stream = await initializeAudioStream()
-        const mediaRecorder = initializeMediaRecorder(stream)
-        
-        mediaRecorder.start(250)
-        measureAudioLevel()
-        startRecordingTimer()
-        
-        setConnectionStatus('disconnected') // 연결은 안되었지만 녹음은 됨
-        showToast("녹음 모드", "실시간 분석은 불가하지만 녹음은 진행됩니다.")
-        setAnalysisLog(prev => prev + `[시스템] 녹음 전용 모드로 시작됨\n`)
-      } catch (recordError) {
-        console.error("❌ 녹음도 실패:", recordError)
-        showToast("완전 실패", "모든 기능을 사용할 수 없습니다.", "destructive")
-      }
     }
   }
 
-  // 통합 중지 함수
+  // 통합 중지 함수 (분석 + 녹음 또는 녹음만)
   const stopAnalysis = () => {
-    console.log("분석 중지")
+    console.log("녹음/분석 중지")
     
     const finalRiskScore = analysisResult.riskScore
     
@@ -865,145 +1051,25 @@ registerProcessor('resampler-processor', ResamplerProcessor);
 
     stopRecordingTimer()
     setIsActive(false)
+    setIsRecording(false)
     setConnectionStatus('disconnected')
     setAudioLevel(0)
     
+    // 위험도가 5% 이상인 경우에만 저장 모달 표시
     if (finalRiskScore >= 5) {
+      console.log(`⚠️ 위험도 ${finalRiskScore}%로 저장 모달 표시`)
       setShowSaveModal(true)
     } else {
+      console.log(`✅ 위험도 ${finalRiskScore}%로 안전한 통화로 판단, 녹음 파일 삭제`)
+      setAnalysisLog(prev => prev + `[시스템] 위험도 ${finalRiskScore}%로 안전한 통화로 판단되어 녹음 파일이 삭제되었습니다\n`)
+      // 녹음 파일 삭제
+      setRecordingBlob(null)
+      setAudioUrl(undefined)
       recordedChunksRef.current = []
       showToast("분석 완료", "안전한 통화로 판단되어 녹음이 삭제되었습니다.")
     }
   }
 
-  // 통화 저장 함수 (S3 업로드 복원)
-  const saveCall = async () => {
-  if (!phoneNumber.trim()) {
-    showToast("입력 오류", "전화번호를 입력해주세요.", "destructive")
-    return
-  }
-
-  setIsSaving(true)
-
-  try {
-    // 1단계: 실제 녹음된 형식 확인
-    const actualMimeType = mediaRecorderRef.current?.mimeType || 'audio/webm'
-    console.log("📄 실제 녹음된 MIME 타입:", actualMimeType)
-
-    // 1단계: 녹음 파일 생성
-    const recordedBlob = new Blob(recordedChunksRef.current, {
-      type: actualMimeType  // 실제 녹음된 타입 사용
-    })
-
-    // 파일 확장자 결정
-    let fileExtension = '.webm'
-    if (actualMimeType.includes('mpeg') || actualMimeType.includes('mp3')) {
-      fileExtension = '.mp3'
-    } else if (actualMimeType.includes('mp4') || actualMimeType.includes('m4a')) {
-      fileExtension = '.m4a'
-    }
-
-    const fileName = `call_${Date.now()}${fileExtension}`
-    console.log("📄 파일명:", fileName, "MIME:", actualMimeType)
-
-    // 2단계: Presigned URL 요청 (POST)
-    console.log("📤 S3 업로드를 위한 Presigned URL 요청 시작")
-    const presignedResponse = await fetch(`/api/uploads/presign`, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        fileName: fileName,
-        contentType: actualMimeType  // 실제 타입 사용
-      })
-    })
-
-    console.log("Presigned URL 응답 상태:", presignedResponse.status)
-    
-    if (!presignedResponse.ok) {
-      const errorText = await presignedResponse.text()
-      console.error("Presigned URL 오류 응답:", errorText)
-      throw new Error(`Presigned URL 발급 실패: ${presignedResponse.status} - ${errorText}`)
-    }
-
-    const { presignedUrl, fileUrl } = await presignedResponse.json()
-    console.log("✅ Presigned URL 발급 성공")
-    console.log("📎 최종 S3 URL:", fileUrl)
-
-    // 3단계: S3에 파일 직접 업로드 (PUT) - CORS 헤더 추가
-    console.log("📤 S3에 파일 직접 업로드 시작")
-    const s3Response = await fetch(presignedUrl, {
-      method: 'PUT',
-      body: recordedBlob,
-      headers: {
-        'Content-Type': actualMimeType,  // 실제 타입과 일치
-        // S3 접근을 위한 추가 헤더는 Presigned URL에 포함됨
-      },
-    })
-
-    console.log("S3 업로드 응답 상태:", s3Response.status)
-
-    if (!s3Response.ok) {
-      const errorText = await s3Response.text()
-      console.error("S3 업로드 오류:", errorText)
-      throw new Error(`S3 업로드 실패: ${s3Response.status} - ${errorText}`)
-    }
-    console.log("✅ S3 업로드 성공")
-
-    // 4단계: 백엔드에 통화 기록 저장 (callDate 제거)
-    console.log("📤 백엔드에 통화 기록 저장 요청 시작")
-    
-    const callData = {
-      phone: phoneNumber.trim(),
-      // callDate 제거됨 - 백엔드에서 자동 생성
-      totalSeconds: recordingTime, // 녹음 시간 (초)
-      riskScore: analysisResult.riskScore,
-      fraudType: determineFraudType(analysisResult.keywords, analysisResult.reason),
-      keywords: analysisResult.keywords,
-      audioUrl: fileUrl // 실제 S3 URL
-    }
-
-    console.log("전송할 통화 데이터:", callData)
-
-    const saveResponse = await fetch('/api/calls', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify(callData)
-    })
-
-    if (!saveResponse.ok) {
-      const errorText = await saveResponse.text()
-      throw new Error(`백엔드에 통화 기록 저장 실패: ${saveResponse.status} - ${errorText}`)
-    }
-
-    const result = await saveResponse.json()
-    console.log("✅ 통화 기록 백엔드 저장 성공:", result)
-
-    // S3 URL 테스트 (개발용)
-    console.log("🔗 S3 URL 테스트:", fileUrl)
-    console.log("💡 브라우저에서 테스트하려면 이 URL을 복사하세요:", fileUrl)
-
-    showToast("저장 완료", "의심 통화가 성공적으로 저장되었습니다.")
-    
-    // 초기화
-    recordedChunksRef.current = []
-    setPhoneNumber('')
-    setShowSaveModal(false)
-
-  } catch (error) {
-    console.error("❌ 저장 실패:", error)
-    if (error instanceof Error) {
-      showToast("저장 실패", error.message, "destructive")
-    } else {
-      showToast("저장 실패", "알 수 없는 오류가 발생했습니다.", "destructive")
-    }
-  } finally {
-    setIsSaving(false)
-  }
-}
 
   // 저장 건너뛰기
   const skipSave = () => {
@@ -1085,6 +1151,13 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         </div>
       </div>
 
+                 {/* 녹음 중 표시 */}
+         {isRecording && (
+           <div className="text-center space-y-4 mb-6">
+             <div className="text-red-500 font-semibold text-lg">🎙️ 녹음 중... ({recordingSeconds}s)</div>
+           </div>
+         )}
+
       <div className="flex-1 flex flex-col items-center justify-center max-w-6xl mx-auto w-full">
         <h1 className="text-3xl font-bold text-white mb-8 text-center">
           실시간 보이스피싱 분석 시스템
@@ -1094,14 +1167,14 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           {/* 메인 컨트롤 */}
           <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
             <div className="p-6">
-              <AnalysisControlPanel
-                isActive={isActive}
-                connectionStatus={connectionStatus}
-                recordingTime={recordingTime}
-                audioLevel={audioLevel}
-                onStartAnalysis={startAnalysis}
-                onStopAnalysis={stopAnalysis}
-              />
+                <AnalysisControlPanel
+  isActive={isActive}
+  connectionStatus={connectionStatus}
+  recordingTime={recordingSeconds}
+  audioLevel={audioLevel}
+  onStartAnalysis={startAnalysis}
+  onStopAnalysis={stopAnalysis}
+/>
               
               <RiskStatusPanel
                 analysisResult={analysisResult}
@@ -1128,8 +1201,10 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         analysisResult={analysisResult}
         phoneNumber={phoneNumber}
         isSaving={isSaving}
+        recordingBlob={recordingBlob}
+        recordingSeconds={recordingSeconds}
         onPhoneNumberChange={setPhoneNumber}
-        onSave={saveCall}
+        onSave={saveToBackend}
         onSkip={skipSave}
       />
     </div>

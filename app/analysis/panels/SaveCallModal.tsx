@@ -11,8 +11,10 @@ interface SaveCallModalProps {
   analysisResult: AnalysisResult
   phoneNumber: string
   isSaving: boolean
+  recordingBlob: Blob | null
+  recordingSeconds: number
   onPhoneNumberChange: (value: string) => void
-  onSave: () => void
+  onSave: (phoneNumber: string, fileUrl: string) => void
   onSkip: () => void
 }
 
@@ -21,6 +23,8 @@ export default function SaveCallModal({
   analysisResult,
   phoneNumber,
   isSaving,
+  recordingBlob,
+  recordingSeconds,
   onPhoneNumberChange,
   onSave,
   onSkip
@@ -32,6 +36,59 @@ export default function SaveCallModal({
       case 'medium': return 'text-yellow-500'  
       case 'low': return 'text-green-500'
       default: return 'text-gray-500'
+    }
+  }
+
+  // 위험 통화 저장 처리
+  const handleSave = async () => {
+    if (!recordingBlob || !phoneNumber.trim()) {
+      alert('녹음 파일과 전화번호를 확인해주세요.')
+      return
+    }
+
+    try {
+      // 1. Presigned URL 요청
+      const fileName = `recording_${Date.now()}.mp3`
+      const presignResponse = await fetch('/api/uploads/presign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          fileName,
+          contentType: 'audio/mpeg',
+        }),
+      })
+
+      if (!presignResponse.ok) {
+        const errorText = await presignResponse.text()
+        throw new Error(`Presigned URL 요청 실패: ${presignResponse.status} - ${errorText}`)
+      }
+
+      const { presignedUrl, fileUrl: finalUrl } = await presignResponse.json()
+      console.log('✅ Presigned URL 받음:', { presignedUrl, fileUrl: finalUrl })
+
+      // 2. S3에 직접 업로드
+      const uploadResponse = await fetch(presignedUrl, {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'audio/mpeg',
+        },
+        body: recordingBlob,
+      })
+
+      if (!uploadResponse.ok) {
+        const errorText = await uploadResponse.text()
+        throw new Error(`S3 업로드 실패: ${uploadResponse.status} - ${errorText}`)
+      }
+
+      console.log('✅ S3 업로드 성공!', finalUrl)
+      
+      // 3. DB에 저장
+      onSave(phoneNumber.trim(), finalUrl)
+      
+    } catch (error) {
+      console.error('저장 실패:', error)
+      const errorMessage = error instanceof Error ? error.message : String(error)
+      alert(`저장 실패: ${errorMessage}`)
     }
   }
 
@@ -74,7 +131,7 @@ export default function SaveCallModal({
 
         <div className="flex space-x-3">
           <button
-            onClick={onSave}
+            onClick={handleSave}
             disabled={isSaving}
             className="flex-1 bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
           >
