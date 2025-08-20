@@ -264,7 +264,7 @@ async def stt(audio_file: UploadFile = File(...)):
 # 초미니 HTML (하드코딩 Q1~Q3 + 발화 끝남 버튼)
 #   - 프론트: WebM 녹음 → 브라우저에서 WAV(16k/mono/PCM16) 변환 → 업로드
 # ===============================
-web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
+web_router = APIRouter(prefix="api/simulation", tags=["simulation-web"])
 
 
 @web_router.get("/", response_class=HTMLResponse)
