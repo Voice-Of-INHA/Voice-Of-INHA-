@@ -4,7 +4,6 @@ import { useState, useRef, useEffect } from "react"
 import HelpModal from "../components/modals/HelpModal"
 import AnalysisControlPanel from "../analysis/panels/AnalysisControlPanel"
 import RiskStatusPanel from "../analysis/panels/RiskStatusPanel"
-import AnalysisLogPanel from "../analysis/panels/AnalysisLogPanel"
 import SaveCallModal from "../analysis/panels/SaveCallModal"
 
 // 위험도 경고 모달 컴포넌트

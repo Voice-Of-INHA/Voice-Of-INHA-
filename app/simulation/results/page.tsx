@@ -309,15 +309,15 @@ export default function SimulationResultsPage() {
             <div className="space-y-4">
               <div className="bg-green-900/20 border border-green-800 rounded-lg p-4">
                 <h5 className="text-green-300 font-medium mb-2">개인정보 요구 시</h5>
-                <p className="text-green-200 italic">"{result.analysis.coaching.better_answer_templates.personal_info_request}"</p>
+                <p className="text-green-200 italic">&quot;{result.analysis.coaching.better_answer_templates.personal_info_request}&quot;</p>
               </div>
               <div className="bg-green-900/20 border border-green-800 rounded-lg p-4">
                 <h5 className="text-green-300 font-medium mb-2">돈 요구 시</h5>
-                <p className="text-green-200 italic">"{result.analysis.coaching.better_answer_templates.money_or_transfer}"</p>
+                <p className="text-green-200 italic">&quot;{result.analysis.coaching.better_answer_templates.money_or_transfer}&quot;</p>
               </div>
               <div className="bg-green-900/20 border border-green-800 rounded-lg p-4">
                 <h5 className="text-green-300 font-medium mb-2">앱 설치 요구 시</h5>
-                <p className="text-green-200 italic">"{result.analysis.coaching.better_answer_templates.app_or_link_install}"</p>
+                <p className="text-green-200 italic">&quot;{result.analysis.coaching.better_answer_templates.app_or_link_install}&quot;</p>
               </div>
             </div>
           </div>
