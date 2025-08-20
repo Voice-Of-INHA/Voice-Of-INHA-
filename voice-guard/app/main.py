@@ -9,7 +9,7 @@ from .models.scenario import Scenario
 from .config import settings
 from .models import scenario
 from .db import Base, engine
-from .routers import call_logs, uploads, realtime, voice_guard, scenarios
+from .routers import call_logs, uploads, realtime, voice_guard, scenarios, simulation
 
 # cloudtype
 if "GCP_KEY_BASE64" in os.environ:
@@ -45,7 +45,10 @@ app.include_router(realtime.router)
 # voice-guard 시스템 (별도 경로로 연결)
 app.include_router(voice_guard.router)
 
+# 시뮬레이션 시스템 추가 (API + 웹 페이지)
 app.include_router(scenarios.router)
+app.include_router(simulation.router)
+
 
 @app.get("/")
 def index():
@@ -98,7 +101,15 @@ def systems_info():
                     "api": "/voice-guard/*",
                     "websocket": "/voice-guard/ws/stt"
                 }
+            },
+            "simulation": {
+                "name": "보이스피싱 시뮬레이션",
+                "description": "AI 기반 보이스피싱 대응 훈련 시스템",
+                "endpoints": {
+                    "api": "/api/*",
+                    "web": "/simulation/"
+                }
             }
         },
-        "connection": "두 시스템이 독립적으로 실행되며, 상위 레벨에서 연결됨"
+        "connection": "세 시스템이 독립적으로 실행되며, 상위 레벨에서 연결됨"
     }

@@ -186,18 +186,50 @@ class VertexRiskAnalyzer:
         print(f"[DEBUG] 프로젝트 ID: {os.getenv('GCP_PROJECT_ID')}")
         print(f"[DEBUG] 위치: {os.getenv('GCP_LOCATION', 'us-central1')}")
 
+        # 시뮬레이션용 프롬프트인지 확인 (더 작은 토큰 수 사용)
+        is_simulation = "보이스피싱 대응 훈련" in user_prompt or "시뮬레이션" in user_prompt
+        max_tokens = 4096
+
+        print(f"[DEBUG] 프롬프트 타입: {'시뮬레이션' if is_simulation else '일반 분석'}")
+        print(f"[DEBUG] max_output_tokens: {max_tokens}")
+
         resp = self.client.models.generate_content(
             model=self.model_name,
             contents=user_prompt,
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,
                 temperature=0.0,
-                max_output_tokens=1024,  # 512에서 1024로 증가
+                max_output_tokens=max_tokens,
                 # response_mime_type="application/json",  # 구조화된 출력 제거
                 # response_schema=RESPONSE_SCHEMA,  # 구조화된 출력 제거
             ),
         )
+
+        # 1차: resp.text에서 직접 추출
         response_text = (getattr(resp, "text", "") or "").strip()
+
+        # 2차: resp.text가 비어있으면 candidates[].content.parts[].text에서 추출
+        if not response_text:
+            print(f"[DEBUG] resp.text가 비어있어 candidates에서 추출 시도...")
+            chunks = []
+            for cand in getattr(resp, "candidates", []) or []:
+                print(f"[DEBUG] candidate finish_reason={getattr(cand, 'finish_reason', None)}")
+                if getattr(cand, "safety_ratings", None):
+                    print(f"[DEBUG] safety_ratings={cand.safety_ratings}")
+                content = getattr(cand, "content", None)
+                if not content:
+                    continue
+                for part in getattr(content, "parts", []) or []:
+                    if getattr(part, "text", None):
+                        chunks.append(part.text)
+            response_text = "".join(chunks).strip()
+            print(f"[DEBUG] candidates에서 추출된 텍스트: {repr(response_text)}")
+
+        # 3차: 여전히 비어있으면 raw response 로깅
+        if not response_text:
+            print(f"[DEBUG] raw resp: {resp}")
+            print(f"[DEBUG] resp 속성들: {dir(resp)}")
+
         print(f"[DEBUG] GenAI 원본 응답: {repr(response_text)}")
         print(f"[DEBUG] 응답 길이: {len(response_text)}")
         return response_text
