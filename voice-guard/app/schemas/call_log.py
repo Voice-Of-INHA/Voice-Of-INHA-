@@ -5,7 +5,7 @@ from datetime import datetime
 class CallCreate(BaseModel):
     phone: str
     totalSeconds: int = Field(ge=0)
-    riskScore: int = Field(ge=0, le=100)
+    riskScore: int = Field(ge=0)
     fraudType: str
     keywords: List[str]
     audioUrl: str
