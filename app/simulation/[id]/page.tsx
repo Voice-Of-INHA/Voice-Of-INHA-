@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useRouter, useParams } from "next/navigation";
 
 // 인터페이스 정의
@@ -102,7 +102,6 @@ export default function SimulationPage() {
 
   // Refs
   const audioRef = useRef<HTMLAudioElement | null>(null);
-  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
   const audioContextRef = useRef<AudioContext | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -174,38 +173,10 @@ export default function SimulationPage() {
         startCurrentRound();
       }, 100);
     }
-  }, [currentRound, scenario]);
-
-  // 오디오 시스템 초기화
-  const initializeAudio = async () => {
-    console.log("오디오 초기화 시작...");
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        sampleRate: 16000, // 16kHz로 설정
-        channelCount: 1,
-      },
-    });
-    streamRef.current = stream;
-
-    // AudioContext (크로스브라우저)
-    const ACtor = window.AudioContext || window.webkitAudioContext!;
-    audioContextRef.current = new ACtor();
-    if (audioContextRef.current.state === "suspended") {
-      await audioContextRef.current.resume();
-    }
-    
-    // VAD 초기화는 여기서만 한 번
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    VoiceActivityDetector.init(audioContextRef.current, source);
-
-    console.log("WAV 녹음 설정 완료");
-  };
+  }, [currentRound, scenario, startCurrentRound]);
 
   // 현재 라운드 시작
-  const startCurrentRound = async () => {
+  const startCurrentRound = useCallback(async () => {
     if (!scenario) return;
 
     console.log(`=== 라운드 ${currentRound + 1} 시작 (총 ${scenario.rounds.length}라운드) ===`);
@@ -248,10 +219,38 @@ export default function SimulationPage() {
       console.log("오디오 자동재생 실패, 리스닝으로 바로 진행");
       startListening();
     }
+  }, [scenario, currentRound]);
+
+  // 오디오 시스템 초기화
+  const initializeAudio = async () => {
+    console.log("오디오 초기화 시작...");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 16000, // 16kHz로 설정
+        channelCount: 1,
+      },
+    });
+    streamRef.current = stream;
+
+    // AudioContext (크로스브라우저)
+    const ACtor = window.AudioContext || window.webkitAudioContext!;
+    audioContextRef.current = new ACtor();
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume();
+    }
+    
+    // VAD 초기화는 여기서만 한 번
+    const source = audioContextRef.current.createMediaStreamSource(stream);
+    VoiceActivityDetector.init(audioContextRef.current, source);
+
+    console.log("WAV 녹음 설정 완료");
   };
 
   // 리스닝 시작
-  const startListening = () => {
+  const startListening = useCallback(() => {
     console.log("음성 인식 시작");
     setPhase("listening");
     if (!VoiceActivityDetector.isInitialized) {
@@ -288,15 +287,15 @@ export default function SimulationPage() {
 
     // 하드 타임아웃(안전장치)
     setTimeout(() => {
-      if ((window as any).currentWavRecording) {
+      if ((window as unknown as Record<string, unknown>).currentWavRecording) {
         console.log("타임아웃 도달, 녹음 중단");
         stopListening();
       }
     }, 50_000);
-  };
+  }, []);
 
   // 리스닝 중단
-  const stopListening = () => {
+  const stopListening = useCallback(() => {
     setPhase("processing");
     if (vadIntervalRef.current) {
       clearInterval(vadIntervalRef.current);
@@ -308,7 +307,7 @@ export default function SimulationPage() {
     }
 
     // MediaRecorder 녹음 중단
-    if ((window as any).currentWavRecording) {
+    if ((window as unknown as Record<string, unknown>).currentWavRecording) {
       const wavBlob = stopWavRecording();
       if (wavBlob) {
         handleRecordingComplete(wavBlob);
@@ -320,7 +319,7 @@ export default function SimulationPage() {
       console.error("WAV 녹음이 중단되지 않음");
       setPhase("listening");
     }
-  };
+  }, []);
 
   // 녹음 완료 → STT
   const handleRecordingComplete = async (audioBlob: Blob) => {

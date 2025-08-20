@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from 'next/server'
 
 // 메모리에 임시로 저장 (실제로는 데이터베이스 사용 권장)
-let storedResponses: { [key: string]: string } = {}
+const storedResponses: { [key: string]: string } = {}
 
 export async function POST(request: NextRequest) {
   try {

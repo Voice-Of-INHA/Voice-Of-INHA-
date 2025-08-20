@@ -110,7 +110,7 @@ export default function Home() {
                 : 'bg-gray-800 text-gray-400 border-gray-500 cursor-not-allowed opacity-50'
             }`}
           >
-            시뮬레이션 게임
+            보이스피싱 시뮬레이션
           </button>
         </div>
 
