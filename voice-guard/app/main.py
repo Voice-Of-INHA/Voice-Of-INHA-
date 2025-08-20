@@ -5,9 +5,11 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 from .models.scenario import Scenario
+from .models import scenario
+from .models.call_log import CallLog         # (안 되어 있으면)
+from .models.call_analysis import CallAnalysis
 
 from .config import settings
-from .models import scenario
 from .db import Base, engine
 from .routers import call_logs, uploads, realtime, voice_guard, scenarios, simulation
 
