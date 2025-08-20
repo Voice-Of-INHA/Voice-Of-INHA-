@@ -216,12 +216,6 @@ export default function SimulationPage() {
           <p>실제 보이스피싱 수법을 체험하여 대응 능력을 향상시키세요</p>
         </div>
       </div>
-
-      {/* 장식 요소들 */}
-      <div className="absolute top-10 left-10 w-20 h-20 border-2 border-gray-600 rounded-full opacity-20 animate-pulse"></div>
-      <div className="absolute bottom-20 right-20 w-16 h-16 border-2 border-gray-500 rounded-full opacity-20 animate-pulse delay-1000"></div>
-      <div className="absolute top-1/3 right-10 w-12 h-12 border-2 border-gray-700 rounded-full opacity-20 animate-pulse delay-2000"></div>
-      <div className="absolute bottom-1/3 left-10 w-14 h-14 border-2 border-gray-600 rounded-full opacity-20 animate-pulse delay-3000"></div>
     </div>
   )
 }

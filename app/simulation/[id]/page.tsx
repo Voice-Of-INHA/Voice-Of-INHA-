@@ -1,7 +1,9 @@
 "use client"
-import { useState, useEffect, useRef } from 'react'
-import { useParams, useRouter } from 'next/navigation'
 
+import { useEffect, useState, useRef } from "react"
+import { useRouter } from "next/navigation"
+
+// 인터페이스 정의
 interface Round {
   round: number
   question: string
@@ -15,556 +17,537 @@ interface Scenario {
   guideline: string
 }
 
-interface AnalysisResult {
-  answer: string
-  risk: 'LOW' | 'MEDIUM' | 'HIGH'
-  score: number
-  explanation: string
+interface UserResponse {
+  round: number
+  audioBlob: Blob
+  transcription?: string
 }
 
-export default function SimulationGamePage() {
-  const params = useParams()
+// VAD (Voice Activity Detection) 모듈
+const VoiceActivityDetector = {
+  // VAD 설정
+  VOLUME_THRESHOLD: 30, // 음성 감지 임계값 (조정 가능)
+  SILENCE_DURATION: 5000, // 침묵 지속 시간 (ms, 조정 가능)
+  
+  analyser: null as AnalyserNode | null,
+  dataArray: null as Uint8Array | null,
+  isInitialized: false,
+  
+  // VAD 초기화
+  init(audioContext: AudioContext, source: MediaStreamAudioSourceNode) {
+    try {
+      this.analyser = audioContext.createAnalyser()
+      this.analyser.fftSize = 256
+      this.analyser.smoothingTimeConstant = 0.8
+      source.connect(this.analyser)
+      
+      const bufferLength = this.analyser.frequencyBinCount
+      this.dataArray = new Uint8Array(bufferLength)
+      this.isInitialized = true
+      
+      console.log('VAD 초기화 완료:', { bufferLength, fftSize: this.analyser.fftSize })
+    } catch (error) {
+      console.error('VAD 초기화 실패:', error)
+      this.isInitialized = false
+    }
+  },
+  
+  // 현재 볼륨 측정
+  getVolume(): number {
+    if (!this.isInitialized || !this.analyser || !this.dataArray) {
+      return 0
+    }
+    
+    try {
+      let sum = 0
+      for (let i = 0; i < this.dataArray.length; i++) {
+        sum += this.dataArray[i]
+      }
+      // 평균 볼륨 반환
+      return sum / this.dataArray.length
+    } catch (error) {
+      console.error('볼륨 측정 오류:', error)
+      return 0
+    }
+  },
+  
+  // 음성 감지 여부
+  isVoiceDetected(): boolean {
+    const volume = this.getVolume()
+    return volume > this.VOLUME_THRESHOLD
+  },
+  
+  // VAD 정리
+  cleanup() {
+    this.analyser = null
+    this.dataArray = null
+    this.isInitialized = false
+  }
+}
+
+// 메인 컴포넌트
+export default function SimulationPage() {
   const router = useRouter()
-  const scenarioId = params.id as string
   
-  const [scenario, setScenario] = useState<Scenario | null>(null)
-  const [currentRound, setCurrentRound] = useState(1)
-  const [loading, setLoading] = useState(true)
-  const [audioPlaying, setAudioPlaying] = useState(false)
-  const [analysisResult, setAnalysisResult] = useState<AnalysisResult | null>(null)
-  const [allRoundResults, setAllRoundResults] = useState<AnalysisResult[]>([])
-  const [sessionId, setSessionId] = useState<string>('')
-  const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
-  const [isListening, setIsListening] = useState(false)
-  
-  const audioRef = useRef<HTMLAudioElement>(null)
-  const socketRef = useRef<WebSocket | null>(null)
+  // 시나리오 데이터 (실제로는 props나 API에서 받아올 것)
+  const [scenario] = useState<Scenario>({
+    id: 1,
+    title: "검찰/경찰 사칭",
+    rounds: [
+      {
+        round: 1,
+        question: "안녕하세요. 서울 지방 검찰청 김종의 수사관입니다. 현재 본인 명의로 대포통장이 개설되어 연락드렸습니다. 김종의씨 맞으신가요?",
+        audio_url: "https://voiceofinha-dev-bucket.s3.ap-northeast-2.amazonaws.com/scenario/%E1%84%80%E1%85%A5%E1%86%B7%E1%84%8E%E1%85%A1%E1%86%AF%E1%84%8E%E1%85%A5%E1%86%BC1.mp3"
+      },
+      {
+        round: 2,
+        question: "예, 지금 본인 명의로 된 대포통장이 발견되었으니, 빨리 조취를 취해야 합니다…",
+        audio_url: "https://voiceofinha-dev-bucket.s3.ap-northeast-2.amazonaws.com/scenario/%E1%84%80%E1%85%A5%E1%86%B7%E1%84%8E%E1%85%A1%E1%86%AF%E1%84%8E%E1%85%A5%E1%86%BC2.mp3"
+      },
+      {
+        round: 3,
+        question: "지금 저희 검찰청 홈페이지에 들어가셔서 이름과 주민번호를 입력하면…",
+        audio_url: "https://voiceofinha-dev-bucket.s3.ap-northeast-2.amazonaws.com/scenario/%E1%84%80%E1%85%A5%E1%86%B7%E1%84%8E%E1%85%A1%E1%86%AF%E1%84%8E%E1%85%A5%E1%86%BC3.mp3"
+      }
+    ],
+    guideline: "경찰서에서는 대포통장 관련 전화를 걸지 않습니다. 보이스피싱 범죄의 전형적인 수법 중 하나가 \"자신을 경찰, 검찰이라고 사칭하며 대포통장과 관련된 전화를 거는 것\"입니다."
+  })
+
+  // 상태 관리
+  const [currentRound, setCurrentRound] = useState(0)
+  const [phase, setPhase] = useState<'preparing' | 'playing' | 'listening' | 'processing' | 'completed'>('preparing')
+  const [userResponses, setUserResponses] = useState<UserResponse[]>([])
+  const [isLoading, setIsLoading] = useState(false)
+  const [isAudioReady, setIsAudioReady] = useState(false) // 오디오 초기화 상태
+
+  // Ref 객체
+  const audioRef = useRef<HTMLAudioElement | null>(null)
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null)
   const audioContextRef = useRef<AudioContext | null>(null)
-  const workletNodeRef = useRef<AudioWorkletNode | null>(null)
   const streamRef = useRef<MediaStream | null>(null)
+  const silenceTimerRef = useRef<NodeJS.Timeout | null>(null)
+  const vadIntervalRef = useRef<NodeJS.Timeout | null>(null)
+  const recordedChunksRef = useRef<Blob[]>([])
 
-  // WebSocket URLs
-  const WS_URLS = [
-    "wss://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/voice-guard/ws/analysis",
-    "ws://port-0-voice-of-inha-meh9fr2ha78ceb2e.sel5.cloudtype.app/voice-guard/ws/analysis"
-  ]
-
-  // 시나리오 데이터 로드
-  const loadScenario = async () => {
-    try {
-      setLoading(true)
-      const response = await fetch(`/api/proxy?path=scenario&id=${scenarioId}`)
-      
-      if (response.ok) {
-        const data = await response.json()
-        console.log('시나리오 데이터:', data)
-        setScenario(data)
-        
-        // 세션 시작
-        await startSession(data.id)
-      } else {
-        console.error('시나리오 로드 실패')
-        alert('시나리오를 불러올 수 없습니다.')
-        router.push('/simulation')
-      }
-    } catch (error) {
-      console.error('시나리오 로드 오류:', error)
-      alert('시나리오를 불러오는 중 오류가 발생했습니다.')
-      router.push('/simulation')
-    } finally {
-      setLoading(false)
-    }
-  }
-
-  // 세션 시작
-  const startSession = async (scenarioId: number) => {
-    try {
-      const response = await fetch('/api/proxy?path=session&action=start', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify({
-          scenarioId: scenarioId,
-          userId: 'user_' + Date.now()
-        })
-      })
-      
-      if (response.ok) {
-        const data = await response.json()
-        setSessionId(data.sessionId || `session_${Date.now()}`)
-        console.log('세션 시작:', data)
-      }
-    } catch (error) {
-      console.error('세션 시작 실패:', error)
-      setSessionId(`session_${Date.now()}`)
-    }
-  }
-
-  // 오디오 재생
-  const playAudio = () => {
-    if (audioRef.current) {
-      setAudioPlaying(true)
-      audioRef.current.play()
-      audioRef.current.onended = () => setAudioPlaying(false)
-    }
-  }
-
-  // AudioWorklet 코드 생성
-  const buildWorkletBlobURL = () => {
-    const workletCode = `
-class ResamplerProcessor extends AudioWorkletProcessor {
-  constructor() {
-    super();
-    this.buffer = [];
-    this.sourceRate = sampleRate;
-    this.targetRate = 16000;
-    this.ratio = this.sourceRate / this.targetRate;
-    this.chunkSamples = Math.floor(16000 * 500 / 1000);
-  }
-  
-  downsampleMono(input) {
-    const inLen = input.length;
-    const outLen = Math.floor(inLen / this.ratio);
-    const out = new Float32Array(outLen);
-    let pos = 0;
-    for (let i = 0; i < outLen; i++) {
-      const nextPos = Math.min(Math.floor((i + 1) * this.ratio), inLen);
-      let sum = 0, cnt = 0;
-      for (; pos < nextPos; pos++, cnt++) sum += input[pos];
-      out[i] = cnt ? (sum / cnt) : 0;
-    }
-    return out;
-  }
-  
-  floatToInt16(f32) {
-    const out = new Int16Array(f32.length);
-    for (let i = 0; i < f32.length; i++) {
-      let s = Math.max(-1, Math.min(1, f32[i]));
-      out[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-    }
-    return out;
-  }
-  
-  process(inputs) {
-    if (!inputs || !inputs[0] || inputs[0].length === 0) return true;
-    const ch0 = inputs[0][0];
-    if (!ch0) return true;
-
-    const down = this.downsampleMono(ch0);
-    this.buffer.push(down);
-
-    let total = 0; 
-    for (const b of this.buffer) total += b.length;
-    
-    if (total >= this.chunkSamples) {
-      const merged = new Float32Array(total);
-      let o = 0; 
-      for (const b of this.buffer) { 
-        merged.set(b, o); 
-        o += b.length; 
-      }
-      this.buffer = [];
-
-      let off = 0;
-      while (off + this.chunkSamples <= merged.length) {
-        const slice = merged.subarray(off, off + this.chunkSamples);
-        const i16 = this.floatToInt16(slice);
-        
-        this.port.postMessage({ 
-          type: 'audio_chunk', 
-          pcm16: i16.buffer,
-          samples: i16.length,
-          timestamp: currentTime
-        }, [i16.buffer]);
-        
-        off += this.chunkSamples;
-      }
-      
-      if (off < merged.length) {
-        this.buffer.push(merged.subarray(off));
-      }
-    }
-    return true;
-  }
-}
-registerProcessor('resampler-processor', ResamplerProcessor);
-    `
-    return URL.createObjectURL(new Blob([workletCode], { type: "application/javascript" }))
-  }
-
-  // WebSocket 초기화
-  const initializeWebSocket = (): Promise<WebSocket> => {
-    return new Promise((resolve, reject) => {
-      const tryConnection = (urlIndex: number): void => {
-        if (urlIndex >= WS_URLS.length) {
-          reject(new Error("모든 WebSocket URL 연결 실패"))
-          return
-        }
-
-        const wsUrl = WS_URLS[urlIndex]
-        console.log(`WebSocket 연결 시도: ${wsUrl}`)
-        
-        const socket = new WebSocket(wsUrl)
-        socket.binaryType = "arraybuffer"
-        
-        socket.onopen = () => {
-          console.log(`WebSocket 연결 성공: ${wsUrl}`)
-          socketRef.current = socket
-          setConnectionStatus('connected')
-          resolve(socket)
-        }
-
-        socket.onmessage = (event) => {
-          try {
-            const message = JSON.parse(event.data)
-            console.log('분석 결과:', message)
-            
-            if (message.answer || message.risk || message.score || message.explanation) {
-              const result = {
-                answer: message.answer || '음성 답변',
-                risk: message.risk || 'MEDIUM',
-                score: message.score || 0,
-                explanation: message.explanation || '분석 완료'
-              }
-              
-              setAnalysisResult(result)
-              
-              // 라운드 결과를 배열에 저장
-              setAllRoundResults(prev => [...prev, result])
-              
-              // 응답 받으면 즉시 WebSocket 연결 종료
-              stopListening()
-            }
-          } catch (error) {
-            console.error('메시지 파싱 오류:', error)
-          }
-        }
-
-        socket.onerror = (error) => {
-          console.error(`WebSocket 오류 (${wsUrl}):`, error)
-          socket.close()
-          setTimeout(() => tryConnection(urlIndex + 1), 1000)
-        }
-
-        socket.onclose = (event) => {
-          console.log(`WebSocket 연결 종료 (${wsUrl}):`, event.code)
-          setConnectionStatus('disconnected')
-          
-          if (event.code !== 1000 && event.code !== 1005 && urlIndex < WS_URLS.length - 1) {
-            setTimeout(() => tryConnection(urlIndex + 1), 2000)
-          } else if (event.code !== 1000 && event.code !== 1005) {
-            reject(new Error("모든 WebSocket URL 연결 실패"))
-          }
-        }
-
-        setTimeout(() => {
-          if (socket.readyState === WebSocket.CONNECTING) {
-            socket.close()
-            setTimeout(() => tryConnection(urlIndex + 1), 1000)
-          }
-        }, 5000)
-      }
-
-      tryConnection(0)
-    })
-  }
-
-  // 오디오 스트림 초기화
-  const initializeAudioStream = async (): Promise<MediaStream> => {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          channelCount: 1,
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: false,
-          sampleRate: 48000
-        },
-        video: false
-      })
-      
-      streamRef.current = stream
-
-      const AudioContextClass = window.AudioContext || AudioContext
-      audioContextRef.current = new AudioContextClass({ sampleRate: 48000 })
-      
-      const source = audioContextRef.current.createMediaStreamSource(stream)
-      
-      const blobURL = buildWorkletBlobURL()
-      await audioContextRef.current.audioWorklet.addModule(blobURL)
-      
-      const workletNode = new AudioWorkletNode(audioContextRef.current, "resampler-processor")
-      workletNodeRef.current = workletNode
-      
-      workletNode.port.onmessage = (ev) => {
-        const d = ev.data
-        if (d && d.type === "audio_chunk" && socketRef.current && socketRef.current.readyState === WebSocket.OPEN) {
-          try {
-            socketRef.current.send(d.pcm16)
-          } catch (error) {
-            console.error("오디오 데이터 전송 실패:", error)
-          }
-        }
-      }
-      
-      source.connect(workletNode)
-      workletNode.connect(audioContextRef.current.destination)
-      
-      return stream
-    } catch (error) {
-      console.error("마이크 접근 실패:", error)
-      throw new Error("마이크 접근 권한을 허용해주세요.")
-    }
-  }
-
-  // 음성 분석 시작 (WebSocket 연결 및 실시간 오디오 스트리밍)
-  const startListening = async () => {
-    try {
-      setConnectionStatus('connecting')
-      setAnalysisResult(null)
-
-      // WebSocket 연결
-      await initializeWebSocket()
-      
-      // 오디오 스트림 초기화 및 실시간 전송
-      await initializeAudioStream()
-      
-      setIsListening(true)
-      console.log('실시간 음성 분석 시작')
-    } catch (error) {
-      console.error('음성 분석 시작 실패:', error)
-      setConnectionStatus('error')
-      alert('마이크 접근 권한이 필요합니다.')
-    }
-  }
-
-  // 음성 분석 중지
-  const stopListening = () => {
-    setIsListening(false)
-    
-    // WebSocket 연결 종료
-    if (socketRef.current) {
-      socketRef.current.close()
-      socketRef.current = null
-    }
-
-    // 오디오 스트림 정리
-    if (workletNodeRef.current) {
-      try { workletNodeRef.current.disconnect() } catch {}
-      workletNodeRef.current = null
-    }
-    
-    if (audioContextRef.current) {
-      try { audioContextRef.current.close() } catch {}
-      audioContextRef.current = null
-    }
-    
-    if (streamRef.current) {
-      streamRef.current.getTracks().forEach(track => track.stop())
-      streamRef.current = null
-    }
-
-    setConnectionStatus('disconnected')
-    console.log('실시간 음성 분석 중지')
-  }
-
-  // 다음 라운드로 이동
-  const nextRound = () => {
-    if (!scenario) return
-    
-    if (currentRound < scenario.rounds.length) {
-      setCurrentRound(currentRound + 1)
-      setAnalysisResult(null)
-    } else {
-      // 마지막 라운드 완료 - 결과 페이지로 이동하면서 모든 라운드 결과 전달
-      const resultsData = {
-        sessionId: sessionId,
-        scenarioId: scenarioId,
-        scenarioTitle: scenario.title,
-        allRounds: allRoundResults,
-        guideline: scenario.guideline
-      }
-      
-      // localStorage에 결과 저장 (결과 페이지에서 사용)
-      localStorage.setItem('simulationResults', JSON.stringify(resultsData))
-      
-      router.push(`result?sessionId=${sessionId}`)
-    }
-  }
-
-  // 위험도에 따른 색상
-  const getRiskColor = (level: string) => {
-    switch (level) {
-      case 'HIGH': return 'text-red-400 bg-red-900/30 border-red-500'
-      case 'MEDIUM': return 'text-yellow-400 bg-yellow-900/30 border-yellow-500'
-      case 'LOW': return 'text-green-400 bg-green-900/30 border-green-500'
-      default: return 'text-gray-400 bg-gray-900/30 border-gray-500'
-    }
-  }
-
+  // 컴포넌트 마운트 시 오디오 초기화
   useEffect(() => {
-    loadScenario()
+    const init = async () => {
+      try {
+        await initializeAudio()
+        setIsAudioReady(true)
+      } catch (error) {
+        console.error('오디오 초기화 실패:', error)
+        alert('마이크 권한이 필요합니다. 브라우저 설정을 확인해주세요.')
+        setIsAudioReady(false)
+      }
+    }
+    init()
     
     // 컴포넌트 언마운트 시 정리
     return () => {
-      if (socketRef.current) {
-        socketRef.current.close()
-      }
-      if (streamRef.current) {
-        streamRef.current.getTracks().forEach(track => track.stop())
-      }
-      if (audioContextRef.current) {
-        audioContextRef.current.close()
+      cleanup()
+    }
+  }, [])
+  
+  // 오디오가 준비되거나 라운드가 변경될 때마다 다음 라운드 시작
+  useEffect(() => {
+    if (isAudioReady) {
+      startCurrentRound()
+    }
+  }, [isAudioReady, currentRound])
+
+  // 오디오 시스템 초기화 함수
+  const initializeAudio = async () => {
+    console.log('오디오 초기화 시작...')
+    
+    const stream = await navigator.mediaDevices.getUserMedia({ 
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true
+      } 
+    })
+    streamRef.current = stream
+    console.log('마이크 스트림 획득 완료')
+
+    audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+    if (audioContextRef.current.state === 'suspended') {
+      await audioContextRef.current.resume()
+    }
+    
+    const source = audioContextRef.current.createMediaStreamSource(stream)
+    VoiceActivityDetector.init(audioContextRef.current, source)
+    console.log('VAD 초기화 완료')
+
+    const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus') 
+      ? 'audio/webm;codecs=opus' 
+      : 'audio/webm'
+      
+    mediaRecorderRef.current = new MediaRecorder(stream, { mimeType })
+    console.log('MediaRecorder 생성 완료:', mimeType)
+
+    mediaRecorderRef.current.ondataavailable = (event) => {
+      if (event.data.size > 0) {
+        recordedChunksRef.current.push(event.data)
       }
     }
-  }, [scenarioId])
 
-  if (loading) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-white text-xl">시나리오 로딩 중...</div>
-      </div>
-    )
+    mediaRecorderRef.current.onstop = () => {
+      const audioBlob = new Blob(recordedChunksRef.current, { type: mimeType })
+      handleRecordingComplete(audioBlob)
+      recordedChunksRef.current = []
+    }
+
+    mediaRecorderRef.current.onerror = (event) => {
+      console.error('MediaRecorder 오류:', event)
+    }
   }
 
-  if (!scenario) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-white text-xl">시나리오를 찾을 수 없습니다.</div>
-      </div>
-    )
+  // 현재 라운드 시작
+  const startCurrentRound = async () => {
+    // 모든 라운드가 완료되면 분석 시작
+    if (currentRound >= scenario.rounds.length) {
+      await analyzeResponses()
+      return
+    }
+
+    setPhase('playing')
+    const round = scenario.rounds[currentRound]
+    
+    // 오디오 재생
+    const audio = new Audio(round.audio_url)
+    audioRef.current = audio
+    
+    audio.onended = () => {
+      startListening()
+    }
+
+    audio.onerror = (error) => {
+      console.error('오디오 재생 실패:', error)
+      alert('오디오를 재생할 수 없습니다.')
+    }
+
+    try {
+      await audio.play()
+    } catch (error) {
+      console.error('오디오 재생 오류:', error)
+    }
   }
 
-  const currentRoundData = scenario.rounds.find(r => r.round === currentRound)
+  // 사용자 음성 감지 및 녹음 시작
+  const startListening = () => {
+    console.log('음성 인식 시작')
+    setPhase('listening')
+    
+    if (!mediaRecorderRef.current || !VoiceActivityDetector.isInitialized) {
+      console.error('MediaRecorder 또는 VAD가 초기화되지 않음')
+      return
+    }
 
+    try {
+      mediaRecorderRef.current.start(100)
+      console.log('녹음 시작됨')
+    } catch (error) {
+      console.error('녹음 시작 실패:', error)
+      return
+    }
+    
+    // VAD (음성 감지) 인터벌 시작
+    vadIntervalRef.current = setInterval(() => {
+      const isVoice = VoiceActivityDetector.isVoiceDetected()
+      
+      if (isVoice) {
+        // 음성이 감지되면 침묵 타이머 리셋
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current)
+          silenceTimerRef.current = null
+        }
+      } else {
+        // 침묵이 감지되면 타이머 시작 (이미 시작되지 않았다면)
+        if (!silenceTimerRef.current) {
+          silenceTimerRef.current = setTimeout(() => {
+            console.log('침묵 감지됨, 녹음 중단')
+            stopListening()
+          }, VoiceActivityDetector.SILENCE_DURATION)
+        }
+      }
+    }, 100)
+  }
+
+  // 녹음 중단 및 처리
+  const stopListening = () => {
+    setPhase('processing')
+    
+    // VAD 관련 정리
+    if (vadIntervalRef.current) {
+      clearInterval(vadIntervalRef.current)
+      vadIntervalRef.current = null
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+
+    // 녹음 중단
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state === 'recording') {
+      mediaRecorderRef.current.stop()
+    }
+  }
+
+  // 녹음 완료 후 처리 (STT 요청)
+  const handleRecordingComplete = async (audioBlob: Blob) => {
+    try {
+      setIsLoading(true)
+      
+      const formData = new FormData()
+      formData.append('audio', audioBlob, 'recording.webm')
+      formData.append('round', (currentRound + 1).toString())
+
+      const response = await fetch('/api/stt', {
+        method: 'POST',
+        body: formData
+      })
+
+      if (!response.ok) {
+        throw new Error(`STT 요청 실패: ${response.status}`)
+      }
+
+      const sttResult = await response.json()
+      
+      const userResponse: UserResponse = {
+        round: currentRound + 1,
+        audioBlob,
+        transcription: sttResult.transcription || ''
+      }
+
+      setUserResponses(prev => [...prev, userResponse])
+      
+      setCurrentRound(prev => prev + 1)
+      
+      setTimeout(() => {
+        // 다음 라운드는 useEffect에서 자동으로 시작됨
+      }, 1000)
+
+    } catch (error) {
+      console.error('녹음 처리 실패:', error)
+      alert('음성 처리 중 오류가 발생했습니다.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // 최종 응답 분석 및 결과 페이지 이동
+  const analyzeResponses = async () => {
+    try {
+      setPhase('processing')
+      setIsLoading(true)
+
+      const analysisData = {
+        scenario_id: scenario.id,
+        scenario_title: scenario.title,
+        questions: scenario.rounds.map(r => r.question),
+        user_responses: userResponses.map(r => r.transcription || ''),
+        guideline: scenario.guideline
+      }
+
+      const response = await fetch('/api/analyze', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(analysisData)
+      })
+
+      if (!response.ok) {
+        throw new Error(`분석 요청 실패: ${response.status}`)
+      }
+
+      const analysisResult = await response.json()
+      
+      sessionStorage.setItem('simulationResult', JSON.stringify({
+        scenario,
+        userResponses: userResponses.map(r => ({ 
+          round: r.round, 
+          transcription: r.transcription 
+        })),
+        analysis: analysisResult
+      }))
+
+      router.push('/simulation/results')
+
+    } catch (error) {
+      console.error('분석 실패:', error)
+      alert('분석 중 오류가 발생했습니다.')
+    } finally {
+      setIsLoading(false)
+    }
+  }
+
+  // 모든 오디오 자원 정리
+  const cleanup = () => {
+    console.log('오디오 정리 시작')
+    
+    if (vadIntervalRef.current) {
+      clearInterval(vadIntervalRef.current)
+      vadIntervalRef.current = null
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current)
+      silenceTimerRef.current = null
+    }
+    if (audioRef.current) {
+      audioRef.current.pause()
+      audioRef.current = null
+    }
+    if (mediaRecorderRef.current && mediaRecorderRef.current.state !== 'inactive') {
+      mediaRecorderRef.current.stop()
+    }
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach(track => {
+        track.stop()
+        console.log('오디오 트랙 정지:', track.kind)
+      })
+      streamRef.current = null
+    }
+    if (audioContextRef.current && audioContextRef.current.state !== 'closed') {
+      audioContextRef.current.close()
+      audioContextRef.current = null
+    }
+    
+    VoiceActivityDetector.cleanup()
+    console.log('오디오 정리 완료')
+  }
+
+  // UI 상태 메시지
+  const getPhaseMessage = () => {
+    switch (phase) {
+      case 'preparing':
+        return '시뮬레이션을 준비하고 있습니다...'
+      case 'playing':
+        return `라운드 ${currentRound + 1}: 상대방이 말하고 있습니다...`
+      case 'listening':
+        return '🎤 당신의 응답을 기다리고 있습니다. 말씀해주세요!'
+      case 'processing':
+        return '응답을 처리하고 있습니다...'
+      case 'completed':
+        return '시뮬레이션이 완료되었습니다!'
+      default:
+        return ''
+    }
+  }
+
+  // UI 상태 아이콘
+  const getPhaseIcon = () => {
+    switch (phase) {
+      case 'preparing':
+        return '⚙️'
+      case 'playing':
+        return '📞'
+      case 'listening':
+        return '🎤'
+      case 'processing':
+        return '⏳'
+      case 'completed':
+        return '✅'
+      default:
+        return ''
+    }
+  }
+
+  // JSX 반환
   return (
-    <div className="min-h-screen bg-black text-white">
-      {/* 헤더 */}
-      <div className="border-b border-gray-600 p-6">
-        <div className="flex items-center justify-between">
-          <button 
-            onClick={() => router.push('/simulation')}
-            className="text-gray-400 hover:text-white transition-colors"
-          >
-            ← 돌아가기
-          </button>
-          <h1 className="text-2xl font-bold">
-            {scenario.title} 시나리오 - Round {currentRound}
-          </h1>
-          <div className="text-gray-400">
-            {currentRound} / {scenario.rounds.length}
+    <div className="min-h-screen bg-black flex items-center justify-center p-4">
+      <div className="max-w-2xl w-full">
+        {/* 헤더 */}
+        <div className="text-center mb-8">
+          <h1 className="text-3xl font-bold text-white mb-2">보이스피싱 시뮬레이션</h1>
+          <h2 className="text-xl text-gray-300 mb-4">{scenario.title}</h2>
+          <div className="flex items-center justify-center space-x-2">
+            <span className="text-4xl">{getPhaseIcon()}</span>
+            <p className="text-lg text-gray-400">{getPhaseMessage()}</p>
           </div>
         </div>
-      </div>
 
-      <div className="container mx-auto px-6 py-8 max-w-4xl">
-        {/* 현재 라운드 질문 */}
-        {currentRoundData && (
-          <div className="border border-white p-6 mb-8">
-            <h2 className="text-xl font-semibold mb-4">질문:</h2>
-            <p className="text-lg mb-6 leading-relaxed">&ldquo;{currentRoundData.question}&rdquo;</p>
-            
-            {/* 오디오 재생 */}
-            <div className="flex items-center gap-4">
-              <button
-                onClick={playAudio}
-                disabled={audioPlaying}
-                className={`flex items-center gap-2 px-4 py-2 rounded-lg transition-colors ${
-                  audioPlaying 
-                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
-                    : 'bg-blue-600 hover:bg-blue-700 text-white'
-                }`}
-              >
-                🔊 {audioPlaying ? '재생 중...' : '오디오 재생'}
-              </button>
-              
-              <audio
-                ref={audioRef}
-                src={currentRoundData.audio_url}
-                preload="metadata"
-              />
-            </div>
+        {/* 진행 상황 */}
+        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-8">
+          <div className="flex items-center justify-between mb-4">
+            <span className="text-gray-400">진행 상황</span>
+            <span className="text-white">{currentRound} / {scenario.rounds.length}</span>
           </div>
-        )}
+          <div className="w-full bg-gray-700 rounded-full h-2">
+            <div 
+              className="bg-blue-600 h-2 rounded-full transition-all duration-500"
+              style={{ width: `${(currentRound / scenario.rounds.length) * 100}%` }}
+            />
+          </div>
+        </div>
 
-        {/* 답변 입력 섹션 */}
-        <div className="border border-gray-600 p-6 mb-8">
-          <h3 className="text-lg font-semibold mb-4">실시간 음성 분석:</h3>
-          
-          {/* 음성 분석 컨트롤 */}
-          <div className="mb-6">
-            <div className="flex items-center gap-4 mb-2">
-              <button
-                onClick={isListening ? stopListening : startListening}
-                className={`flex items-center gap-2 px-6 py-3 rounded-lg font-semibold transition-colors ${
-                  isListening
-                    ? 'bg-red-600 hover:bg-red-700 text-white'
-                    : 'bg-green-600 hover:bg-green-700 text-white'
-                }`}
-              >
-                {isListening ? '🔴 분석 중지' : '🎤 음성 분석 시작'}
-              </button>
-              
-              {/* 연결 상태 표시 */}
-              <div className={`px-3 py-1 rounded-lg text-sm ${
-                connectionStatus === 'connected' ? 'bg-green-900/30 text-green-400' :
-                connectionStatus === 'connecting' ? 'bg-yellow-900/30 text-yellow-400' :
-                connectionStatus === 'error' ? 'bg-red-900/30 text-red-400' :
-                'bg-gray-900/30 text-gray-400'
-              }`}>
-                {connectionStatus === 'connected' ? '분석 중...' :
-                 connectionStatus === 'connecting' ? '연결 중...' :
-                 connectionStatus === 'error' ? '연결 오류' :
-                 '연결 안됨'}
-              </div>
+        {/* 현재 라운드 정보 */}
+        {currentRound < scenario.rounds.length && (
+          <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-8">
+            <div className="flex items-center space-x-3 mb-4">
+              <span className="bg-blue-600 text-white px-3 py-1 rounded-full text-sm font-medium">
+                라운드 {currentRound + 1}
+              </span>
             </div>
             
-            {isListening && (
-              <div className="text-sm text-gray-400 mt-2">
-                마이크가 활성화되어 실시간으로 음성을 분석하고 있습니다.
+            {phase === 'playing' && (
+              <div className="text-gray-300">
+                <p className="mb-2">📞 상대방:</p>
+                <p className="text-lg italic border-l-4 border-red-500 pl-4">
+                  "{scenario.rounds[currentRound].question}"
+                </p>
+              </div>
+            )}
+
+            {phase === 'listening' && (
+              <div className="text-center">
+                <div className="animate-pulse mb-4">
+                  <div className="w-16 h-16 bg-red-600 rounded-full mx-auto flex items-center justify-center">
+                    <span className="text-2xl">🎤</span>
+                  </div>
+                </div>
+                <p className="text-white text-lg mb-2">음성을 감지하고 있습니다</p>
+                <p className="text-gray-400 text-sm">말씀이 끝나면 자동으로 다음 단계로 진행됩니다</p>
               </div>
             )}
           </div>
-        </div>
+        )}
 
-        {/* 실시간 분석 결과 */}
-        {analysisResult && (
-          <div className="border border-gray-600 p-6 mb-8">
-            <h3 className="text-lg font-semibold mb-4">실시간 분석 결과</h3>
-            
+        {/* 로딩 상태 */}
+        {isLoading && (
+          <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 text-center">
+            <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-white mx-auto mb-4" />
+            <p className="text-gray-400">처리 중...</p>
+          </div>
+        )}
+
+        {/* 완료된 라운드들 */}
+        {userResponses.length > 0 && (
+          <div className="bg-gray-900 border border-gray-700 rounded-lg p-6">
+            <h3 className="text-lg font-semibold text-white mb-4">완료된 응답</h3>
             <div className="space-y-3">
-              <div>
-                <span className="text-gray-400">사용자 답변:</span>
-                <span className="ml-2 text-white">&ldquo;{analysisResult.answer}&rdquo;</span>
-              </div>
-              
-              <div className="flex items-center gap-2">
-                <span className="text-gray-400">→ 위험도:</span>
-                <span className={`px-3 py-1 rounded-lg border font-semibold ${getRiskColor(analysisResult.risk)}`}>
-                  {analysisResult.risk} (점수 {analysisResult.score})
-                </span>
-              </div>
-              
-              <div>
-                <span className="text-gray-400">→ 설명:</span>
-                <span className="ml-2 text-white">&ldquo;{analysisResult.explanation}&rdquo;</span>
-              </div>
+              {userResponses.map((response, index) => (
+                <div key={index} className="bg-gray-800 p-3 rounded-lg">
+                  <div className="flex items-center space-x-2 mb-2">
+                    <span className="bg-green-600 text-white px-2 py-1 rounded text-xs">
+                      라운드 {response.round}
+                    </span>
+                    <span className="text-green-400">✓</span>
+                  </div>
+                  <p className="text-gray-300 text-sm">
+                    {response.transcription || '음성 변환 중...'}
+                  </p>
+                </div>
+              ))}
             </div>
           </div>
         )}
 
-        {/* 다음 라운드 버튼 */}
-        {analysisResult && (
-          <div className="border border-white p-4">
-            <button
-              onClick={nextRound}
-              className="w-full py-3 px-6 bg-white text-black font-bold text-lg hover:bg-gray-200 transition-colors"
-            >
-              {currentRound < scenario.rounds.length ? '다음 라운드 ▶' : '결과 보기 ▶'}
-            </button>
-          </div>
-        )}
+        {/* 안내 */}
+        <div className="mt-8 text-center">
+          <p className="text-gray-500 text-sm">
+            이 시뮬레이션은 보이스피싱 대응 능력 향상을 위한 연습입니다.
+          </p>
+        </div>
       </div>
     </div>
   )

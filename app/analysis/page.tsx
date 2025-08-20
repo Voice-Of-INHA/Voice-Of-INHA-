@@ -7,9 +7,98 @@ import RiskStatusPanel from "../analysis/panels/RiskStatusPanel"
 import AnalysisLogPanel from "../analysis/panels/AnalysisLogPanel"
 import SaveCallModal from "../analysis/panels/SaveCallModal"
 
+// 위험도 경고 모달 컴포넌트
+interface RiskAlertModalProps {
+  isOpen: boolean
+  riskScore: number
+  keywords: string[]
+  reason: string
+  onClose: () => void
+}
+
+const RiskAlertModal = ({ isOpen, riskScore, keywords, reason, onClose }: RiskAlertModalProps) => {
+  if (!isOpen) return null
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center">
+      {/* 배경 오버레이 */}
+      <div 
+        className="absolute inset-0 bg-black/70 backdrop-blur-sm"
+        onClick={onClose}
+      />
+      
+      {/* 모달 컨텐츠 */}
+      <div className="relative bg-red-900 border-2 border-red-500 rounded-lg shadow-2xl max-w-md w-full mx-4 animate-pulse">
+        <div className="p-6 text-center">
+          {/* 경고 아이콘 */}
+          <div className="text-6xl mb-4 animate-bounce">⚠️</div>
+          
+          {/* 제목 */}
+          <h2 className="text-2xl font-bold text-red-100 mb-4">
+            ⚠️ 고위험 통화 감지!
+          </h2>
+          
+          {/* 위험도 */}
+          <div className="bg-red-800 rounded-lg p-4 mb-4">
+            <div className="text-3xl font-bold text-red-100 mb-2">
+              위험도: {riskScore}%
+            </div>
+            <div className="text-red-200">
+              보이스피싱 가능성이 높습니다!
+            </div>
+          </div>
+          
+          {/* 감지된 키워드 */}
+          {keywords.length > 0 && (
+            <div className="mb-4">
+              <div className="text-sm text-red-200 mb-2">감지된 위험 키워드:</div>
+              <div className="flex flex-wrap gap-1 justify-center">
+                {keywords.map((keyword, idx) => (
+                  <span 
+                    key={idx}
+                    className="bg-red-700 text-red-100 px-2 py-1 rounded text-xs"
+                  >
+                    {keyword}
+                  </span>
+                ))}
+              </div>
+            </div>
+          )}
+          
+          {/* 판단 근거 */}
+          {reason && (
+            <div className="mb-6">
+              <div className="text-sm text-red-200 mb-1">판단 근거:</div>
+              <div className="text-red-100 text-sm bg-red-800 rounded p-2">
+                {reason}
+              </div>
+            </div>
+          )}
+          
+          {/* 안내 메시지 */}
+          <div className="bg-yellow-900 border border-yellow-600 rounded p-3 mb-4">
+            <div className="text-yellow-100 text-sm">
+              <div className="font-semibold mb-1">⚠️ 즉시 조치하세요!</div>
+              <div>• 통화를 즉시 종료하세요</div>
+              <div>• 개인정보를 절대 제공하지 마세요</div>
+              <div>• 의심스러면 112에 신고하세요</div>
+            </div>
+          </div>
+          
+          {/* 닫기 버튼 */}
+          <button
+            onClick={onClose}
+            className="w-full bg-red-600 hover:bg-red-700 text-white font-semibold py-3 px-4 rounded-lg transition-colors"
+          >
+            확인했습니다
+          </button>
+        </div>
+      </div>
+    </div>
+  )
+}
+
 // Safari 구형 브라우저 지원을 위한 타입 확장
-
-
 interface AnalysisResult {
   risk: 'low' | 'medium' | 'high' | null
   riskScore: number
@@ -60,14 +149,17 @@ export default function AnalysisPage() {
   const audioChunksRef = useRef<Blob[]>([])
   const audioRef = useRef<HTMLAudioElement | null>(null)
 
-
   // 통합 녹음/분석 관련 상태
   const [isActive, setIsActive] = useState(false)
   const [audioLevel, setAudioLevel] = useState(0)
   
   // 연결 상태
   const [connectionStatus, setConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected' | 'error'>('disconnected')
-  const [analysisLog, setAnalysisLog] = useState<string>('')
+  
+  // STT와 분석 로그 분리
+  const [sttLog, setSttLog] = useState<string>('')           // STT 결과만
+  const [analysisLog, setAnalysisLog] = useState<string>('') // 분석 결과만
+  const [currentPartialText, setCurrentPartialText] = useState<string>('') // 현재 partial STT
   
   // 분석 관련 상태
   const [analysisResult, setAnalysisResult] = useState<AnalysisResult>({
@@ -77,6 +169,10 @@ export default function AnalysisPage() {
     reason: '',
     timestamp: 0
   })
+
+  // 위험도 경고 모달 상태
+  const [showRiskAlert, setShowRiskAlert] = useState(false)
+  const [hasShownRiskAlert, setHasShownRiskAlert] = useState(false) // 중복 표시 방지
 
   const startRecording = async () => {
     try {
@@ -260,7 +356,9 @@ export default function AnalysisPage() {
     setRecordingSeconds(0)
     
     // 분석 상태도 초기화
+    setSttLog('')
     setAnalysisLog('')
+    setCurrentPartialText('')
     setAnalysisResult({
       risk: null,
       riskScore: 0,
@@ -268,6 +366,10 @@ export default function AnalysisPage() {
       reason: '',
       timestamp: 0
     })
+
+    // 위험도 경고 상태 초기화
+    setShowRiskAlert(false)
+    setHasShownRiskAlert(false)
 
     if (audioRef.current) {
       audioRef.current.pause()
@@ -319,6 +421,22 @@ export default function AnalysisPage() {
     if (score >= 70) return 'high'
     if (score >= 50) return 'medium'
     return 'low'
+  }
+
+  // 위험도 60 이상 시 경고 모달 표시
+  const checkRiskAlert = (riskScore: number) => {
+    if (riskScore >= 60 && !hasShownRiskAlert) {
+      setShowRiskAlert(true)
+      setHasShownRiskAlert(true)
+      
+      // 브라우저 알림도 표시 (권한이 있다면)
+      if (Notification.permission === 'granted') {
+        new Notification('⚠️ 보이스피싱 위험!', {
+          body: `위험도 ${riskScore}% - 즉시 통화를 종료하세요!`,
+          icon: '/favicon.ico'
+        })
+      }
+    }
   }
 
   // AudioWorklet 코드 생성
@@ -424,7 +542,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
   }
 
-
   const stopRecordingTimer = () => {
     if (recordingTimerRef.current) {
       clearInterval(recordingTimerRef.current)
@@ -453,7 +570,10 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     
     setAnalysisResult(newResult)
     
-    // 추가 정보 로깅
+    // 위험도 60 이상 시 경고 모달 표시
+    checkRiskAlert(newResult.riskScore)
+    
+    // 추가 정보 로깅 (분석 로그에만)
     if (msg.evidence && msg.evidence.length > 0) {
       console.log("🔍 증거:", msg.evidence)
       setAnalysisLog(prev => prev + `[증거] ${msg.evidence?.join(', ')}\n`)
@@ -531,48 +651,62 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           resolve(socket)
         }
 
-        // 메시지 수신 처리
+        // 메시지 수신 처리 (STT와 분석 결과 분리)
         socket.onmessage = (event) => {
           try {
-            // 백엔드에서 텍스트 메시지 수신 (STT 결과)
+            // 백엔드에서 텍스트 메시지 수신
             const message = event.data
-            console.log("📥 STT 결과:", message)
+            console.log("📥 받은 메시지:", message)
             
-            // [FINAL] 메시지 처리
+            // [PARTIAL] 메시지 처리 - 실시간으로 덮어쓰기
+            if (message.includes('[PARTIAL]') || message.includes('[PART]')) {
+              const partialMatch = message.match(/\[(PARTIAL|PART)\]\s*(.+)/)
+              if (partialMatch) {
+                const partialText = partialMatch[2].trim()
+                setCurrentPartialText(partialText)
+                console.log("📝 Partial STT:", partialText)
+              }
+            }
+            
+            // [FINAL] 메시지 처리 - STT 로그에 추가하고 partial 초기화
             if (message.includes('[FINAL]')) {
               const finalMatch = message.match(/\[FINAL\]\s*(.+)/)
               if (finalMatch) {
                 const transcriptText = finalMatch[1].trim()
-                setAnalysisLog(prev => prev + `통화 내용: ${transcriptText}\n`)
+                // 기존 로그에 FINAL 문장 추가
+                setSttLog(prev => prev + `${transcriptText}\n`)
+                // 다음 PART를 위해 partial 텍스트 초기화
+                setCurrentPartialText('')
+                console.log("✅ Final STT added to log:", transcriptText)
               }
             }
             
-            // [RISK] 메시지 처리 및 한글로 변환
+            // [RISK] 메시지 처리 - 분석 로그에 저장
             if (message.includes('[RISK]')) {
               try {
                 const riskMatch = message.match(/\[RISK\]\s*(.+)/)
                 if (riskMatch) {
                   const riskData = JSON.parse(riskMatch[1].replace(/'/g, '"'))
                   
-                  // 한글로 다듬어서 표시
+                  // 분석 로그에 한글로 다듬어서 표시
                   if (riskData.riskScore !== undefined) {
-                    setAnalysisLog(prev => prev + `위험도 분석: ${riskData.riskScore}점\n`)
+                    setAnalysisLog(prev => prev + `🎯 위험도: ${riskData.riskScore}점\n`)
                   }
                   
                   if (riskData.fraudType) {
-                    setAnalysisLog(prev => prev + `사기 유형: ${riskData.fraudType}\n`)
+                    setAnalysisLog(prev => prev + `🚨 사기 유형: ${riskData.fraudType}\n`)
                   }
                   
                   if (riskData.keywords && riskData.keywords.length > 0) {
-                    setAnalysisLog(prev => prev + `감지된 키워드: ${riskData.keywords.join(', ')}\n`)
+                    setAnalysisLog(prev => prev + `🔍 감지된 키워드: ${riskData.keywords.join(', ')}\n`)
                   }
                   
                   if (riskData.reason) {
-                    setAnalysisLog(prev => prev + `판단 근거: ${riskData.reason}\n`)
+                    setAnalysisLog(prev => prev + `📝 판단 근거: ${riskData.reason}\n`)
                   }
                   
                   if (riskData.actions && riskData.actions.length > 0) {
-                    let actionsText = `권장 조치:\n`
+                    let actionsText = `⚠️ 권장 조치:\n`
                     riskData.actions.forEach((action: string, index: number) => {
                       actionsText += `  ${index + 1}. ${action}\n`
                     })
@@ -594,17 +728,17 @@ registerProcessor('resampler-processor', ResamplerProcessor);
                 }
               } catch (parseError) {
                 console.log("위험도 데이터 파싱 실패:", parseError)
-                // 파싱 실패 시 원본 메시지 표시
-                setAnalysisLog(prev => prev + `${message}\n`)
+                // 파싱 실패 시 원본 메시지를 분석 로그에 표시
+                setAnalysisLog(prev => prev + `📊 ${message}\n`)
               }
             }
             
-            // [ACCUMULATED] 메시지 처리
+            // [ACCUMULATED] 메시지 처리 - 분석 로그에 저장
             if (message.includes('[ACCUMULATED]')) {
               const accMatch = message.match(/누적 점수:\s*(\d+)점/)
               if (accMatch) {
                 const accScore = parseInt(accMatch[1])
-                setAnalysisLog(prev => prev + `누적 위험도: ${accScore}점\n`)
+                setAnalysisLog(prev => prev + `📈 누적 위험도: ${accScore}점\n`)
                 
                 setAnalysisResult(prev => ({
                   ...prev,
@@ -612,10 +746,13 @@ registerProcessor('resampler-processor', ResamplerProcessor);
                   risk: getRiskLevel(accScore),
                   timestamp: Date.now()
                 }))
+                
+                // 위험도 60 이상 시 경고 모달 표시
+                checkRiskAlert(accScore)
               }
             }
             
-            // [WARNING] 메시지 처리
+            // [WARNING] 메시지 처리 - 분석 로그에 저장
             if (message.includes('[WARNING]')) {
               const warningMatch = message.match(/\[WARNING\]\s*(.+)/)
               if (warningMatch) {
@@ -624,7 +761,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
               }
             }
             
-            // [ERROR] 메시지 처리
+            // [ERROR] 메시지 처리 - 분석 로그에 저장
             if (message.includes('[ERROR]')) {
               const errorMatch = message.match(/\[ERROR\]\s*(.+)/)
               if (errorMatch) {
@@ -722,16 +859,16 @@ registerProcessor('resampler-processor', ResamplerProcessor);
   // 오디오 스트림 초기화
   const initializeAudioStream = async (): Promise<MediaStream> => {
     try {
-             const stream = await navigator.mediaDevices.getUserMedia({ 
-         audio: {
-           channelCount: 1,
-           echoCancellation: true,
-           noiseSuppression: true,
-           autoGainControl: false,
-           sampleRate: 48000
-         },
-         video: false
-       })
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: false,
+          sampleRate: 48000
+        },
+        video: false
+      })
       
       streamRef.current = stream
 
@@ -780,7 +917,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       throw new Error("마이크 접근 권한을 허용해주세요.")
     }
   }
-
 
   // WebSocket 연결 테스트 함수
   const testWebSocketConnection = async () => {
@@ -904,11 +1040,17 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       setConnectionStatus('connecting')
       setIsActive(true)
       setIsRecording(true)
+      setSttLog('')
       setAnalysisLog('')
+      setCurrentPartialText('')
       setError(null)
       setUploadSuccess(false)
       setFileUrl(null)
       setRecordingSeconds(0)
+      
+      // 위험도 경고 상태 초기화
+      setShowRiskAlert(false)
+      setHasShownRiskAlert(false)
       
       setAnalysisResult({
         risk: null,
@@ -917,6 +1059,14 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         reason: '',
         timestamp: 0
       })
+
+      // 브라우저 알림 권한 요청
+      if (Notification.permission === 'default') {
+        const permission = await Notification.requestPermission()
+        if (permission === 'granted') {
+          console.log("✅ 브라우저 알림 권한 허용됨")
+        }
+      }
 
       // 디버그 정보 표시
       console.log("🔍 디버그 정보:")
@@ -1054,9 +1204,10 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     setIsRecording(false)
     setConnectionStatus('disconnected')
     setAudioLevel(0)
+    setCurrentPartialText('') // partial 텍스트 초기화
     
-    // 위험도가 5% 이상인 경우에만 저장 모달 표시
-    if (finalRiskScore >= 5) {
+    // 위험도가 50% 이상인 경우에만 저장 모달 표시
+    if (finalRiskScore >= 50) {
       console.log(`⚠️ 위험도 ${finalRiskScore}%로 저장 모달 표시`)
       setShowSaveModal(true)
     } else {
@@ -1069,7 +1220,6 @@ registerProcessor('resampler-processor', ResamplerProcessor);
       showToast("분석 완료", "안전한 통화로 판단되어 녹음이 삭제되었습니다.")
     }
   }
-
 
   // 저장 건너뛰기
   const skipSave = () => {
@@ -1151,12 +1301,12 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         </div>
       </div>
 
-                 {/* 녹음 중 표시 */}
-         {isRecording && (
-           <div className="text-center space-y-4 mb-6">
-             <div className="text-red-500 font-semibold text-lg">🎙️ 녹음 중... ({recordingSeconds}s)</div>
-           </div>
-         )}
+      {/* 녹음 중 표시 */}
+      {isRecording && (
+        <div className="text-center space-y-4 mb-6">
+          <div className="text-red-500 font-semibold text-lg">🎙️ 녹음 중... ({recordingSeconds}s)</div>
+        </div>
+      )}
 
       <div className="flex-1 flex flex-col items-center justify-center max-w-6xl mx-auto w-full">
         <h1 className="text-3xl font-bold text-white mb-8 text-center">
@@ -1167,14 +1317,14 @@ registerProcessor('resampler-processor', ResamplerProcessor);
           {/* 메인 컨트롤 */}
           <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
             <div className="p-6">
-                <AnalysisControlPanel
-  isActive={isActive}
-  connectionStatus={connectionStatus}
-  recordingTime={recordingSeconds}
-  audioLevel={audioLevel}
-  onStartAnalysis={startAnalysis}
-  onStopAnalysis={stopAnalysis}
-/>
+              <AnalysisControlPanel
+                isActive={isActive}
+                connectionStatus={connectionStatus}
+                recordingTime={recordingSeconds}
+                audioLevel={audioLevel}
+                onStartAnalysis={startAnalysis}
+                onStopAnalysis={stopAnalysis}
+              />
               
               <RiskStatusPanel
                 analysisResult={analysisResult}
@@ -1184,10 +1334,63 @@ registerProcessor('resampler-processor', ResamplerProcessor);
             </div>
           </div>
 
-          {/* 분석 로그 */}
-          <AnalysisLogPanel analysisLog={analysisLog} />
+          {/* STT와 분석 로그를 분리해서 표시 */}
+          <div className="space-y-4">
+            {/* STT 결과 패널 */}
+            <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
+              <div className="p-4">
+                <h3 className="text-lg font-semibold text-white mb-3 flex items-center">
+                  🎯 음성 인식 결과
+                </h3>
+                <div className="bg-gray-800 rounded-lg p-4 max-h-48 overflow-y-auto">
+                  {/* STT 결과 표시 영역 */}
+                  <div className="text-white text-sm font-mono whitespace-pre-wrap">
+                    {/* 기존 FINAL 결과들 (로그에 저장된 것들) */}
+                    {sttLog}
+                    
+                    {/* 현재 진행 중인 PART 결과 (실시간 업데이트) */}
+                    {currentPartialText && (
+                      <span className="text-gray-400 italic">
+                        {currentPartialText}...
+                      </span>
+                    )}
+                    
+                    {/* 아무것도 없을 때 기본 메시지 */}
+                    {!sttLog && !currentPartialText && (
+                      <span className="text-gray-500">
+                        음성 인식 결과가 여기에 표시됩니다...
+                      </span>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            {/* 분석 결과 패널 */}
+            <div className="bg-gray-900 border border-gray-700 rounded-lg shadow-lg">
+              <div className="p-4">
+                <h3 className="text-lg font-semibold text-white mb-3 flex items-center">
+                  📊 위험도 분석 결과
+                </h3>
+                <div className="bg-gray-800 rounded-lg p-4 max-h-48 overflow-y-auto">
+                  <div className="text-white text-sm font-mono whitespace-pre-wrap">
+                    {analysisLog || '분석 결과가 여기에 표시됩니다...'}
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
+
+      {/* 위험도 경고 모달 */}
+      <RiskAlertModal
+        isOpen={showRiskAlert}
+        riskScore={analysisResult.riskScore}
+        keywords={analysisResult.keywords}
+        reason={analysisResult.reason}
+        onClose={() => setShowRiskAlert(false)}
+      />
 
       {/* 도움말 모달 */}
       <HelpModal 

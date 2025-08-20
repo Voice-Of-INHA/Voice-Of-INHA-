@@ -9,6 +9,7 @@ interface AnalysisRecord {
   phoneNumber: string
   callDate: string // 0000년00월00일
   callDuration: string // 00분 00초
+  callDurationSeconds: number // 총 초 수 추가
   riskPercentage: number
   phishingType: string
   keywords: string[]
@@ -114,11 +115,13 @@ export default function AnalysisDetailPage() {
         const data: ApiResponseItem = await res.json()
 
         const riskScore = data.riskScore ?? 0
+        const totalSeconds = data.totalSeconds ?? 0
         const mapped: AnalysisRecord = {
           id: (data.id ?? id).toString(),
           phoneNumber: data.phone ?? "알 수 없음",
           callDate: formatDate(data.callDate),
-          callDuration: formatDuration(data.totalSeconds),
+          callDuration: formatDuration(totalSeconds),
+          callDurationSeconds: totalSeconds, // 총 초 수 저장
           riskPercentage: riskScore,
           phishingType: data.fraudType ?? "분석 중",
           keywords: data.keywords ?? [],
@@ -126,6 +129,12 @@ export default function AnalysisDetailPage() {
           risk: riskScore >= 70 ? "high" : "medium",
         }
         setRecord(mapped)
+        // duration 안전하게 설정
+        if (totalSeconds > 0 && isFinite(totalSeconds)) {
+          setDuration(totalSeconds)
+        } else {
+          setDuration(0)
+        }
       } catch (e) {
         console.error("❌ 상세 조회 실패:", e)
         setError(e instanceof Error ? e.message : "알 수 없는 오류가 발생했습니다")
@@ -163,7 +172,13 @@ export default function AnalysisDetailPage() {
       }
       // 새 오디오 객체
       const a = new Audio(record.audioFileUrl)
-      a.onloadedmetadata = () => setDuration(a.duration)
+      a.onloadedmetadata = () => {
+        // 실제 오디오 길이와 DB의 길이 중 더 정확한 것을 사용
+        const actualDuration = a.duration
+        if (actualDuration && !isNaN(actualDuration) && isFinite(actualDuration) && actualDuration > 0) {
+          setDuration(actualDuration)
+        }
+      }
       a.ontimeupdate = () => setCurrentTime(a.currentTime)
       a.onplay = () => setIsPlaying(true)
       a.onpause = () => setIsPlaying(false)
@@ -194,6 +209,7 @@ export default function AnalysisDetailPage() {
   }
 
   const fmtTime = (t: number) => {
+    if (isNaN(t) || t < 0 || !isFinite(t)) return "0:00"
     const m = Math.floor(t / 60)
     const s = Math.floor(t % 60)
     return `${m}:${s.toString().padStart(2, "0")}`
@@ -316,32 +332,28 @@ export default function AnalysisDetailPage() {
                   )}
                 </button>
 
-                {duration > 0 && (
-                  <div className="flex items-center space-x-2 text-gray-400 text-sm">
-                    <span>{fmtTime(currentTime)}</span>
-                    <span>/</span>
-                    <span>{fmtTime(duration)}</span>
-                  </div>
-                )}
+                <div className="flex items-center space-x-2 text-gray-400 text-sm">
+                  <span>{fmtTime(currentTime)}</span>
+                  <span>/</span>
+                  <span>{duration > 0 && isFinite(duration) ? fmtTime(duration) : "0:00"}</span>
+                </div>
               </div>
 
-              {duration > 0 && (
-                <div className="w-full">
-                  <input
-                    type="range"
-                    min={0}
-                    max={duration}
-                    value={currentTime}
-                    onChange={handleSeek}
-                    className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
-                    style={{
-                      background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
-                        (currentTime / duration) * 100
-                      }%, #374151 ${(currentTime / duration) * 100}%, #374151 100%)`,
-                    }}
-                  />
-                </div>
-              )}
+              <div className="w-full">
+                <input
+                  type="range"
+                  min={0}
+                  max={duration > 0 && isFinite(duration) ? duration : 100} // 유효하지 않으면 기본값 100
+                  value={currentTime}
+                  onChange={handleSeek}
+                  className="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer"
+                  style={{
+                    background: `linear-gradient(to right, #3b82f6 0%, #3b82f6 ${
+                      duration > 0 && isFinite(duration) ? (currentTime / duration) * 100 : 0
+                    }%, #374151 ${duration > 0 && isFinite(duration) ? (currentTime / duration) * 100 : 0}%, #374151 100%)`,
+                  }}
+                />
+              </div>
             </div>
           </div>
         </div>
