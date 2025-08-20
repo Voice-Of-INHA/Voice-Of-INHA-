@@ -52,26 +52,23 @@ class AudioBody(BaseModel):
     s3Url: str  # 권장: s3://bucket/key 형식
 
 @router.post("/{call_id}/analyze")
-def analyze_now(call_id: int, db: Session = Depends(get_db), background: BackgroundTasks | None = None):
+def analyze_now(
+    call_id: int,
+    background: BackgroundTasks,                 # ← 기본값 없는 파라미터를 앞에
+    db: Session = Depends(get_db),               # ← 기본값 있는 파라미터는 뒤에
+):
     row = get_call(db, call_id)
     if not row:
         raise HTTPException(404, "not found")
 
-    # 2-1) S3 URL 확보: DB에서 읽음
     s3_url = getattr(row, "audioUrl", None)
     if not s3_url:
         raise HTTPException(400, "audioUrl missing in DB; upload & save it first")
 
-    # 2-2) 중복 실행 방지
+    # 중복 실행 방지
     ana = db.query(CallAnalysis).filter(CallAnalysis.callId == call_id).first()
     if ana and ana.status in ("RUNNING", "DONE"):
         return {"ok": True, "started": False, "status": ana.status}
 
-    # 2-3) 비동기 실행
-    if background is not None:
-        background.add_task(LlmFinalAnalyzer.run_full_analysis, call_id, s3_url)
-        return {"ok": True, "started": True}
-
-    # (동기 환경이라면 직접 호출)
-    LlmFinalAnalyzer.run_full_analysis(call_id, s3_url)
+    background.add_task(LlmFinalAnalyzer.run_full_analysis, call_id, s3_url)
     return {"ok": True, "started": True}
