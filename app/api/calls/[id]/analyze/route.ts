@@ -1,14 +1,8 @@
 import { NextResponse } from 'next/server'
 
-interface AnalyzeParams {
-  params: {
-    id: string
-  }
-}
-
 export async function POST(
   req: Request,
-  { params }: AnalyzeParams
+  { params }: { params: { id: string } }
 ) {
   const backendUrl = process.env.BACKEND_URL
   if (!backendUrl) {
@@ -76,7 +70,7 @@ export async function POST(
 // GET 메소드도 필요한 경우 추가
 export async function GET(
   req: Request,
-  { params }: AnalyzeParams
+  { params }: { params: { id: string } }
 ) {
   const backendUrl = process.env.BACKEND_URL
   if (!backendUrl) {
