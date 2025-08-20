@@ -2,7 +2,7 @@ import { NextResponse } from 'next/server'
 
 export async function POST(
   request: Request,
-  context: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   const backendUrl = process.env.BACKEND_URL
   if (!backendUrl) {
@@ -11,7 +11,8 @@ export async function POST(
   }
 
   try {
-    const { id: callId } = context.params
+    const resolvedParams = await params
+    const callId = resolvedParams.id
     
     if (!callId) {
       return new Response("Call ID가 필요합니다", { status: 400 })
