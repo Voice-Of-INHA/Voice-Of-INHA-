@@ -26,9 +26,7 @@ export async function POST(
       headers: { 
         'Content-Type': 'application/json',
         'Accept': 'application/json'
-      },
-      // 요청 본문이 필요한 경우 추가
-      // body: JSON.stringify({})
+      }
     })
 
     console.log(`📥 백엔드 응답 상태: ${res.status}`)
@@ -64,49 +62,5 @@ export async function POST(
     }
     
     return new Response(`통화 분석 요청 실패: ${msg}`, { status: 502 })
-  }
-}
-
-// GET 메소드도 필요한 경우 추가
-export async function GET(
-  req: Request,
-  { params }: { params: { id: string } }
-) {
-  const backendUrl = process.env.BACKEND_URL
-  if (!backendUrl) {
-    return new Response("백엔드 URL이 설정되지 않았습니다", { status: 500 })
-  }
-
-  try {
-    const callId = params.id
-    
-    if (!callId) {
-      return new Response("Call ID가 필요합니다", { status: 400 })
-    }
-
-    console.log(`📤 통화 분석 상태 조회: call_id=${callId}`)
-
-    // 분석 결과나 상태 조회
-    const res = await fetch(`${backendUrl}/api/calls/${callId}/analyze`, {
-      method: 'GET',
-      headers: { 
-        'Content-Type': 'application/json',
-        'Accept': 'application/json'
-      }
-    })
-
-    if (!res.ok) {
-      const text = await res.text()
-      throw new Error(`백엔드 분석 상태 조회 실패: ${res.status} - ${text}`)
-    }
-
-    const json = await res.json()
-    console.log("✅ 통화 분석 상태 조회 성공:", json)
-    return NextResponse.json(json)
-    
-  } catch (err) {
-    console.error("❌ 통화 분석 상태 조회 실패:", err)
-    const msg = err instanceof Error ? err.message : String(err)
-    return new Response(`통화 분석 상태 조회 실패: ${msg}`, { status: 502 })
   }
 }
