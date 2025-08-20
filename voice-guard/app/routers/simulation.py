@@ -1,13 +1,12 @@
 # app/routers/simulation.py
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import List, Dict, Any
 import json
-import os
 import re
 
-from ..ai import VertexRiskAnalyzer
+from ..ai import VertexRiskAnalyzer, GoogleStreamingSTT
 
 # 시뮬레이션 전용 AI 분석기
 class SimulationAnalyzer:
@@ -49,6 +48,52 @@ class SimulationAnalyzer:
         except Exception:
             return {}
     
+    def _call_simulation_llm(self, prompt: str) -> str:
+        """시뮬레이션 전용 LLM 호출 - google-genai(Client) 사용"""
+        try:
+            import os
+            from google import genai
+            from google.genai import types
+
+            project = os.getenv("GCP_PROJECT_ID")
+            location = os.getenv("GCP_LOCATION", "us-central1")
+            if not project:
+                raise RuntimeError("GCP_PROJECT_ID 환경변수를 설정하세요.")
+
+            # google-genai는 'configure'가 아니라 Client 인스턴스를 생성해서 사용
+            api_key = os.getenv("GOOGLE_API_KEY")
+            if not api_key:
+                raise RuntimeError("GOOGLE_API_KEY 환경변수를 설정하세요.")
+
+            return genai.Client(vertexai=True, project=project, location=location)
+
+
+
+            # 모델 호출 (contents=str, config=GenerateContentConfig)
+            resp = client.models.generate_content(
+                model="gemini-1.5-flash",
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.1,
+                    max_output_tokens=1024,
+                ),
+            )
+
+            # 통일된 텍스트 추출
+            text = getattr(resp, "text", None)
+            if not text:
+                # candidates가 있을 때 보정 (방어적)
+                try:
+                    text = resp.candidates[0].content.parts[0].text
+                except Exception:
+                    text = ""
+            return (text or "").strip()
+
+        except Exception as e:
+            print(f"[ERROR] 시뮬레이션 LLM 호출 실패: {e}")
+            raise
+
+    
     def analyze_simulation_answer(self, question: str, answer: str, correct_answer: str, wrong_examples: List[str]) -> Dict[str, Any]:
         """시뮬레이션 답변 분석 - 질문 대비 답변 정확성 평가"""
         
@@ -76,18 +121,18 @@ class SimulationAnalyzer:
 """
         
         try:
-            # LLM 분석 실행
-            print(f"[DEBUG] Google GenAI 호출 시작...")
+            # 시뮬레이션 전용 LLM 분석 실행
+            print(f"[DEBUG] 시뮬레이션 전용 Google GenAI 호출 시작...")
             print(f"[DEBUG] 프롬프트 길이: {len(prompt)}")
             print(f"[DEBUG] 프롬프트 미리보기: {prompt[:200]}...")
             
-            result = self.analyzer.analyze(prompt, [])
+            # LLM 호출
+            result = self._call_simulation_llm(prompt)
             
-            print(f"[DEBUG] LLM 원본 결과: {result}")
-            print(f"[DEBUG] LLM 응답 타입: {type(result)}")
-            print(f"[DEBUG] LLM 응답 키들: {list(result.keys()) if isinstance(result, dict) else 'Not a dict'}")
+            print(f"[DEBUG] 시뮬레이션 LLM 원본 결과: {result}")
+            print(f"[DEBUG] 시뮬레이션 LLM 응답 타입: {type(result)}")
             
-            # ⬇⬇ robust 파싱/정규화
+            # JSON 파싱
             parsed = {}
             if isinstance(result, dict):
                 parsed = result
@@ -97,24 +142,24 @@ class SimulationAnalyzer:
             else:
                 parsed = {}
             
-            print(f"[DEBUG] 정규화된 LLM 결과: {parsed}")
+            print(f"[DEBUG] 정규화된 시뮬레이션 LLM 결과: {parsed}")
             
             # 시뮬레이션 전용 점수 추출
             simulation_score = 0
             if "simulation_score" in parsed and isinstance(parsed["simulation_score"], (int, float, str)):
                 try:
                     simulation_score = int(parsed["simulation_score"])
-                    print(f"[DEBUG] LLM에서 simulation_score 추출 성공: {simulation_score}")
+                    print(f"[DEBUG] 시뮬레이션 LLM에서 simulation_score 추출 성공: {simulation_score}")
                 except Exception as e:
                     print(f"[DEBUG] simulation_score 변환 실패: {e}")
                     simulation_score = 0
             else:
-                print(f"[DEBUG] LLM에서 simulation_score 키 없음: {list(parsed.keys())}")
+                print(f"[DEBUG] 시뮬레이션 LLM에서 simulation_score 키 없음: {list(parsed.keys())}")
             
             print(f"[DEBUG] 추출된 simulation_score: {simulation_score}")
             print(f"[DEBUG] simulation_score 타입: {type(simulation_score)}")
             
-            # 위험도에 따른 점수 계산 (시뮬레이션 점수 우선)
+            # 위험도에 따른 점수 계산 (LLM 결과만 사용)
             if simulation_score == 10:
                 risk_level = "LOW"
                 score = 10
@@ -125,29 +170,11 @@ class SimulationAnalyzer:
                 risk_level = "HIGH"
                 score = -10
             else:
-                # 시뮬레이션 점수가 없으면 수동으로 판단
-                print(f"[DEBUG] 시뮬레이션 점수가 없어 수동 판단 시작")
-                
-                # 사용자 답변과 올바른 답변의 유사도 판단
-                print(f"[DEBUG] 수동 분석 시작 - 사용자 답변: '{answer}'")
-                print(f"[DEBUG] 수동 분석 시작 - 올바른 답변: '{correct_answer}'")
-                print(f"[DEBUG] 수동 분석 시작 - 잘못된 예시들: {wrong_examples}")
-                
-                if self._is_similar_to_correct(answer, correct_answer):
-                    print(f"[DEBUG] 수동 분석 결과: 올바른 답변과 유사함 → LOW")
-                    risk_level = "LOW"
-                    score = 10
-                    simulation_score = 10
-                elif self._is_similar_to_wrong(answer, wrong_examples):
-                    print(f"[DEBUG] 수동 분석 결과: 잘못된 답변과 유사함 → HIGH")
-                    risk_level = "HIGH"
-                    score = -10
-                    simulation_score = -10
-                else:
-                    print(f"[DEBUG] 수동 분석 결과: 중간 정도 → MEDIUM")
-                    risk_level = "MEDIUM"
-                    score = -5
-                    simulation_score = -5
+                # LLM이 예상하지 못한 점수를 반환한 경우 기본값
+                print(f"[DEBUG] LLM이 예상하지 못한 점수 반환: {simulation_score}")
+                risk_level = "MEDIUM"
+                score = -5
+                simulation_score = -5
             
             return {
                 "risk": risk_level,
@@ -161,117 +188,16 @@ class SimulationAnalyzer:
             
         except Exception as e:
             print(f"[ERROR] 시뮬레이션 분석 실패: {str(e)}")
-            print(f"[DEBUG] LLM 실패로 수동 분석 시작")
             
-            # LLM 실패 시 수동 분석 사용
-            manual_result = self._manual_analysis(question, answer, correct_answer, wrong_examples)
-            
+            # LLM 실패 시 기본 응답 반환
             return {
-                "risk": manual_result["risk"],
-                "score": manual_result["score"],
-                "explanation": manual_result["reason"],
-                "feedback": manual_result["feedback"],
-                "simulation_score": manual_result["score"], # 수동 분석은 점수만 반환
+                "risk": "ERROR",
+                "score": 0,
+                "explanation": f"LLM 분석 실패: {str(e)}",
+                "feedback": "⚠️ AI 분석 중 오류가 발생했습니다. 다시 시도해주세요.",
+                "simulation_score": 0,
                 "correct_answer": correct_answer,
                 "wrong_examples": wrong_examples
-            }
-    
-    def _is_similar_to_correct(self, user_answer: str, correct_answer: str) -> bool:
-        """사용자 답변이 올바른 답변과 유사한지 판단"""
-        # 키워드 기반 유사도 판단
-        correct_keywords = ["확인", "직접", "방문", "알려드릴 수 없", "거부", "그럴 리 없", "아니", "안", "못"]
-        user_lower = user_answer.lower()
-        
-        # 부정적 표현이 포함되어 있으면 올바른 답변으로 간주
-        for keyword in correct_keywords:
-            if keyword in user_lower:
-                return True
-        
-        # 체포 관련 질문에 대한 부정적 답변은 올바름
-        if "체포" in user_answer or "당할" in user_answer:
-            return True
-            
-        return False
-    
-    def _is_similar_to_wrong(self, user_answer: str, wrong_examples: List[str]) -> bool:
-        """사용자 답변이 잘못된 예시와 유사한지 판단"""
-        import re
-        
-        # 계좌번호 패턴 감지 (무조건 HIGH 위험)
-        if re.search(r'\d{3,4}[-\s]?\d{3,4}[-\s]?\d{3,4}', user_answer):
-            print(f"[DEBUG] 계좌번호 패턴 감지: {user_answer}")
-            return True
-        
-        # 주민번호 패턴 감지 (무조건 HIGH 위험)
-        if re.search(r'\d{6}[-\s]?\d{7}', user_answer):
-            print(f"[DEBUG] 주민번호 패턴 감지: {user_answer}")
-            return True
-        
-        # 개인정보 제공 관련 키워드
-        wrong_keywords = ["계좌", "카드", "주민", "신분증", "송금", "입금", "결제", "번호", "네", "알려드리", "보내드리"]
-        user_lower = user_answer.lower()
-        
-        # 긍정적 응답은 잘못된 답변
-        if any(word in user_lower for word in ["네", "알려드리", "보내드리", "하겠습니다"]):
-            return True
-        
-        for keyword in wrong_keywords:
-            if keyword in user_lower:
-                return True
-        return False
-    
-    def _manual_analysis(self, question: str, answer: str, correct_answer: str, wrong_examples: List[str]) -> Dict[str, Any]:
-        """LLM 실패 시 수동 분석"""
-        print(f"[DEBUG] 수동 분석 시작: {answer}")
-        
-        # 개인정보 직접 제공 시 무조건 HIGH 위험
-        import re
-        if re.search(r'\d{3,4}[-\s]?\d{3,4}[-\s]?\d{3,4}', answer) or re.search(r'\d{6}[-\s]?\d{7}', answer):
-            return {
-                "risk": "HIGH",
-                "score": -10,
-                "reason": "개인정보를 직접 제공하여 매우 위험합니다.",
-                "feedback": "🚨 매우 위험! 개인정보를 절대 알려주면 안 됩니다!"
-            }
-        
-        # 체포 관련 질문에 대한 특별 처리
-        if "체포" in question:
-            if self._is_similar_to_correct(answer, correct_answer):
-                return {
-                    "risk": "LOW",
-                    "score": 10,
-                    "reason": "체포 협박에 대해 단호하게 거부하는 올바른 대응입니다.",
-                    "feedback": "✅ 좋은 대답입니다! 보이스피싱에 대응하는 올바른 방법입니다."
-                }
-            else:
-                return {
-                    "risk": "HIGH",
-                    "score": -10,
-                    "reason": "체포 협박에 대해 적극적으로 대응하지 않아 위험합니다.",
-                    "feedback": "⚠️ 매우 위험한 대답입니다! 실제 보이스피싱에 속을 수 있습니다."
-                }
-        
-        # 일반적인 분석
-        if self._is_similar_to_correct(answer, correct_answer):
-            return {
-                "risk": "LOW",
-                "score": 10,
-                "reason": "올바른 답변과 유사한 안전한 대응입니다.",
-                "feedback": "✅ 좋은 대답입니다! 보이스피싱에 대응하는 올바른 방법입니다."
-            }
-        elif self._is_similar_to_wrong(answer, wrong_examples):
-            return {
-                "risk": "HIGH",
-                "score": -10,
-                "reason": "잘못된 답변과 유사한 위험한 대응입니다.",
-                "feedback": "⚠️ 매우 위험한 대답입니다! 실제 보이스피싱에 속을 수 있습니다."
-            }
-        else:
-            return {
-                "risk": "MEDIUM",
-                "score": -5,
-                "reason": "중간 정도의 답변으로, 더 신중한 대응이 필요합니다.",
-                "feedback": "⚠️ 주의가 필요한 대답입니다. 더 신중하게 생각해보세요."
             }
     
     def _generate_feedback(self, risk_level: str, score: int) -> str:
@@ -288,6 +214,9 @@ api_router = APIRouter(prefix="/api", tags=["simulation"])
 
 # 웹 페이지 라우터
 web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
+
+# 시뮬레이션 전용 WebSocket 라우터
+websocket_router = APIRouter(prefix="/simulation", tags=["simulation-websocket"])
 
 # 시나리오 데이터 구조
 class Scenario(BaseModel):
@@ -388,6 +317,248 @@ SCENARIOS = {
         ]
     }
 }
+
+# API 라우터
+@api_router.get("/scenarios")
+async def get_scenarios():
+    """사용 가능한 시나리오 목록 반환"""
+    scenarios = []
+    for scenario_id, scenario in SCENARIOS.items():
+        scenarios.append({
+            "id": scenario["id"],
+            "title": scenario["title"],
+            "description": scenario["description"]
+        })
+    return {"scenarios": scenarios}
+
+@api_router.get("/start/{scenario_id}")
+async def start_scenario(scenario_id: int):
+    """특정 시나리오 시작 - 첫 번째 라운드 정보 제공"""
+    if scenario_id not in SCENARIOS:
+        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
+    
+    scenario = SCENARIOS[scenario_id]
+    first_round = scenario["rounds"][0]
+    
+    return {
+        "id": scenario_id,
+        "title": scenario["title"],
+        "current_round": 1,
+        "total_rounds": len(scenario["rounds"]),
+        "question": first_round["question"],
+        "audio_url": first_round["audio_url"]
+    }
+
+@api_router.get("/round/{scenario_id}/{round_number}")
+async def get_round(scenario_id: int, round_number: int):
+    """특정 라운드 정보 제공"""
+    if scenario_id not in SCENARIOS:
+        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
+    
+    scenario = SCENARIOS[scenario_id]
+    if round_number < 1 or round_number > len(scenario["rounds"]):
+        raise HTTPException(status_code=404, detail="라운드를 찾을 수 없습니다")
+    
+    round_data = scenario["rounds"][round_number - 1]
+    
+    return {
+        "scenario_id": scenario_id,
+        "round": round_number,
+        "question": round_data["question"],
+        "audio_url": round_data["audio_url"]
+    }
+
+@api_router.post("/answer")
+async def evaluate_answer(request: AnswerRequest):
+    """사용자 답변 평가 - AI가 위험도 판별 + 점수 계산"""
+    try:
+        print(f"[DEBUG] 답변 평가 시작: scenario_id={request.scenario_id}")
+        print(f"[DEBUG] 질문: {request.question}")
+        print(f"[DEBUG] 답변: {request.answer}")
+        
+        # 현재 시나리오와 라운드 정보 가져오기
+        if request.scenario_id not in SCENARIOS:
+            raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
+        
+        scenario = SCENARIOS[request.scenario_id]
+        current_round = None
+        
+        # 현재 질문에 해당하는 라운드 찾기
+        for round_data in scenario["rounds"]:
+            if round_data["question"] == request.question:
+                current_round = round_data
+                break
+        
+        if not current_round:
+            raise HTTPException(status_code=404, detail="해당 질문의 라운드를 찾을 수 없습니다")
+        
+        print(f"[DEBUG] 현재 라운드: {current_round}")
+        
+        # 시뮬레이션 전용 AI 분석기 생성
+        analyzer = SimulationAnalyzer()
+        
+        # 시뮬레이션 분석 실행
+        result = analyzer.analyze_simulation_answer(
+            request.question, 
+            request.answer, 
+            current_round["correct_answer"], 
+            current_round["wrong_examples"]
+        )
+        
+        print(f"[DEBUG] 시뮬레이션 분석 결과: {result}")
+        
+        # 시뮬레이션 점수에 따른 위험도 및 점수 계산
+        simulation_score = result.get("simulation_score", 0)
+        
+        if simulation_score == 10:
+            risk_level = "LOW"
+            score = 10
+        elif simulation_score == -5:
+            risk_level = "MEDIUM"
+            score = -5
+        elif simulation_score == -10:
+            risk_level = "HIGH"
+            score = -10
+        else:
+            # 기본값
+            risk_level = "MEDIUM"
+            score = -5
+        
+        # 피드백 생성
+        if risk_level == "HIGH":
+            feedback = "⚠️ 매우 위험한 대답입니다! 실제 보이스피싱에 속을 수 있습니다."
+        elif risk_level == "MEDIUM":
+            feedback = "⚠️ 주의가 필요한 대답입니다. 더 신중하게 생각해보세요."
+        else:
+            feedback = "✅ 좋은 대답입니다! 보이스피싱에 대응하는 올바른 방법입니다."
+        
+        return AnswerResponse(
+            risk=risk_level,
+            score=score,
+            explanation=result.get("explanation", "분석 결과가 없습니다."),
+            feedback=feedback,
+            correct_answer=result.get("correct_answer", ""),
+            wrong_examples=result.get("wrong_examples", [])
+        )
+        
+    except Exception as e:
+        print(f"[ERROR] 답변 평가 실패: {str(e)}")
+        import traceback
+        print(f"[ERROR] 상세 에러: {traceback.format_exc()}")
+        
+        # 에러 발생 시 기본 응답 반환
+        return AnswerResponse(
+            risk="ERROR",
+            score=0,
+            explanation=f"AI 분석 중 오류가 발생했습니다: {str(e)}",
+            feedback="⚠️ 시스템 오류가 발생했습니다. 다시 시도해주세요.",
+            correct_answer="",
+            wrong_examples=[]
+        )
+
+@api_router.post("/result")
+async def save_result(request: ResultRequest):
+    """시뮬레이션 결과 저장 (선택사항)"""
+    # 실제 구현에서는 데이터베이스에 저장
+    # 현재는 메모리에 임시 저장
+    return {
+        "status": "success",
+        "message": "결과가 저장되었습니다.",
+        "data": {
+            "user_id": request.user_id,
+            "scenario_id": request.scenario_id,
+            "risk": request.risk,
+            "score": request.score
+        }
+    }
+
+@api_router.get("/scenario/{scenario_id}")
+async def get_scenario_detail(scenario_id: int):
+    """시나리오 상세 정보 제공"""
+    if scenario_id not in SCENARIOS:
+        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
+    
+    return SCENARIOS[scenario_id]
+
+# 시뮬레이션 전용 WebSocket 엔드포인트
+@websocket_router.websocket("/ws/stt")
+async def simulation_ws_stt(ws: WebSocket):
+    """시뮬레이션 전용 STT WebSocket - voice-guard STT 로직 사용"""
+    await ws.accept()
+    stt = None
+    
+    # GCP 자격증명 설정 (voice-guard와 동일)
+    def _setup_gcp_credentials():
+        import os
+        base_app = os.path.dirname(os.path.dirname(__file__))  # app/
+        proj_root = os.path.dirname(base_app)  # voice-guard/
+        
+        key_candidates = [
+            os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "",
+            os.path.join(proj_root, "keys", "gcp-stt-key.json"),
+        ]
+        key_path = next((p for p in key_candidates if p and os.path.exists(p)), None)
+        if key_path and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+            print(f"GCP 자격증명 설정: {key_path}")
+    
+    async def on_json(payload: dict):
+        """STT 결과를 WebSocket으로 전송 (시뮬레이션 전용)"""
+        try:
+            if payload.get("type") == "stt_update":
+                # 시뮬레이션 전용 메시지 형식으로 전송
+                await ws.send_json({
+                    "type": "stt_update",
+                    "transcript": payload.get("transcript", ""),
+                    "is_final": payload.get("is_final", False),
+                    "confidence": payload.get("confidence", 0.0)
+                })
+            elif payload.get("type") == "error":
+                print(f"STT 오류: {payload.get('message', 'Unknown error')}")
+                await ws.send_json({
+                    "type": "error",
+                    "message": payload.get("message", "Unknown error")
+                })
+        except Exception as e:
+            print(f"on_json 처리 오류: {e}")
+    
+    try:
+        _setup_gcp_credentials()
+        stt = GoogleStreamingSTT()
+        await stt.start(on_json)
+        print("시뮬레이션 STT 서비스 시작")
+        
+        while True:
+            try:
+                # WebSocket에서 오디오 데이터 수신
+                data = await ws.receive_bytes()
+                stt.feed_audio(data)
+            except WebSocketDisconnect:
+                print("[INFO] WebSocket 연결이 끊어졌습니다.")
+                break
+            except Exception as e:
+                # 텍스트 메시지 처리 (예: "__END__")
+                try:
+                    text_data = await ws.receive_text()
+                    if text_data == "__END__":
+                        print("[INFO] 시뮬레이션 STT 종료 신호 수신")
+                        break
+                    else:
+                        print(f"[INFO] 텍스트 메시지 수신: {text_data}")
+                except WebSocketDisconnect:
+                    print("[INFO] WebSocket 연결이 끊어졌습니다.")
+                    break
+                except Exception as text_e:
+                    print(f"WebSocket 데이터 수신 오류: {e}")
+                    break
+                
+    except WebSocketDisconnect:
+        print("시뮬레이션 WebSocket 연결 종료")
+    except Exception as e:
+        print(f"시뮬레이션 WebSocket 오류: {e}")
+    finally:
+        if stt:
+            stt.close()
 
 # 웹 페이지 라우터
 @web_router.get("/", response_class=HTMLResponse)
@@ -554,6 +725,22 @@ async def simulation_index():
                     
                     <div class="answer-input-area">
                         <h3>💬 나의 대답</h3>
+                        
+                        <!-- WebSocket STT 영역 -->
+                        <div style="margin-bottom: 15px; padding: 15px; background: #f0f8ff; border-radius: 10px; border: 2px dashed #007bff;">
+                            <h4 style="color: #007bff; margin-bottom: 10px;">🎤 실시간 음성 인식</h4>
+                            <button id="wsConnectBtn" onclick="toggleWSConnection()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin-right: 10px;">
+                                🔗 연결 시작
+                            </button>
+                            <span id="wsStatus" style="color: #666; font-size: 14px;">연결 대기 중</span>
+                            <div id="sttResult" style="margin-top: 10px; padding: 10px; background: #e8f5e8; border-radius: 5px; display: none;">
+                                <strong>인식 결과:</strong> <span id="sttText"></span>
+                                <div style="margin-top: 5px; font-size: 12px; color: #666;">
+                                    💡 음성을 인식하면 자동으로 답변 입력칸에 입력됩니다
+                                </div>
+                            </div>
+                        </div>
+                        
                         <textarea class="answer-input" id="answerInput" placeholder="여기에 답변을 입력하세요..."></textarea>
                         <button class="submit-btn" onclick="submitAnswer()">전송하기</button>
                     </div>
@@ -573,6 +760,12 @@ async def simulation_index():
             let currentRound = 1;
             let totalRounds = 1;
             let totalScore = 0;
+            
+            // WebSocket STT 관련 변수
+            let ws = null;
+            let mediaRecorder = null;
+            let isConnected = false;
+            let currentTranscript = "";
             
             // 페이지 로드 시 시나리오 목록 가져오기
             window.onload = async function() {
@@ -598,6 +791,10 @@ async def simulation_index():
             // 페이지 새로고침 시 상태 초기화
             window.addEventListener('beforeunload', function() {
                 resetGameState();
+                // WebSocket 연결 해제
+                if (ws) {
+                    ws.close();
+                }
             });
             
             // 게임 상태 초기화
@@ -657,6 +854,166 @@ async def simulation_index():
                 } catch (error) {
                     console.error('라운드 로드 실패:', error);
                 }
+            }
+            
+            // WebSocket STT 토글
+            async function toggleWSConnection() {
+                if (isConnected) {
+                    disconnectWS();
+                } else {
+                    await connectWS();
+                }
+            }
+            
+            // WebSocket 연결
+            async function connectWS() {
+                try {
+                    // 마이크 권한 요청
+                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+                    
+                    // 시뮬레이션 전용 WebSocket 연결
+                    ws = new WebSocket('ws://127.0.0.1:8000/simulation/ws/stt');
+                    
+                    ws.onopen = function() {
+                        console.log('WebSocket 연결됨');
+                        isConnected = true;
+                        document.getElementById('wsConnectBtn').textContent = '🔌 연결 해제';
+                        document.getElementById('wsConnectBtn').style.background = '#dc3545';
+                        document.getElementById('wsStatus').textContent = '연결됨 - 음성 인식 중...';
+                        document.getElementById('sttResult').style.display = 'block';
+                        
+                        // 오디오 스트림 시작
+                        startAudioStream(stream);
+                    };
+                    
+                    ws.onmessage = function(event) {
+                        try {
+                            const data = JSON.parse(event.data);
+                            console.log('STT 메시지:', data);
+                            
+                            if (data.type === 'stt_update') {
+                                currentTranscript = data.transcript;
+                                document.getElementById('sttText').textContent = data.transcript;
+                                
+                                // 실시간으로 답변 입력칸에 업데이트
+                                document.getElementById('answerInput').value = data.transcript;
+                                
+                                // 최종 결과면 강조 표시
+                                if (data.is_final) {
+                                    document.getElementById('answerInput').style.borderColor = '#28a745';
+                                    document.getElementById('answerInput').style.backgroundColor = '#f8fff8';
+                                    console.log('STT 최종 결과:', data.transcript);
+                                } else {
+                                    document.getElementById('answerInput').style.borderColor = '#007bff';
+                                    document.getElementById('answerInput').style.backgroundColor = '#f8fbff';
+                                }
+                            }
+                        } catch (error) {
+                            console.error('STT 메시지 파싱 오류:', error);
+                        }
+                    };
+                    
+                    ws.onclose = function() {
+                        console.log('WebSocket 연결 종료');
+                        isConnected = false;
+                        document.getElementById('wsConnectBtn').textContent = '🔗 연결 시작';
+                        document.getElementById('wsConnectBtn').style.background = '#007bff';
+                        document.getElementById('wsStatus').textContent = '연결 대기 중';
+                        document.getElementById('sttResult').style.display = 'none';
+                        
+                        // 입력칸 스타일 초기화
+                        document.getElementById('answerInput').style.borderColor = '#ddd';
+                        document.getElementById('answerInput').style.backgroundColor = 'white';
+                        
+                        // 스트림 정리
+                        stream.getTracks().forEach(track => track.stop());
+                    };
+                    
+                    ws.onerror = function(error) {
+                        console.error('WebSocket 오류:', error);
+                        alert('WebSocket 연결 오류가 발생했습니다.');
+                    };
+                    
+                } catch (error) {
+                    console.error('WebSocket 연결 실패:', error);
+                    alert('마이크 접근 권한이 필요합니다.');
+                }
+            }
+            
+            // WebSocket 연결 해제
+            function disconnectWS() {
+                try {
+                    if (ws && ws.readyState === WebSocket.OPEN) {
+                        ws.send("__END__");
+                    }
+                } catch (e) { }
+                
+                try {
+                    if (ws) {
+                        ws.close();
+                        ws = null;
+                    }
+                } catch (e) { }
+                
+                console.log('WebSocket 연결 해제됨');
+            }
+            
+            // 오디오 스트림 시작 (voice-guard와 동일한 방식)
+            async function startAudioStream(stream) {
+                const audioCtx = new AudioContext({ sampleRate: 48000 });
+                
+                // AudioWorklet 모듈 등록
+                await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([`
+                    class Pcm16Worklet extends AudioWorkletProcessor {
+                        constructor() { 
+                            super(); 
+                            this.buf = []; 
+                            this.ratio = sampleRate / 16000; 
+                            this.phase = 0; 
+                        }
+                        process(inputs) {
+                            if (!inputs.length || !inputs[0].length) return true;
+                            const ch = inputs[0][0];
+                            for (let i = 0; i < ch.length; i++) {
+                                this.phase += 1;
+                                if (this.phase >= this.ratio) {
+                                    this.phase -= this.ratio;
+                                    this.buf.push(ch[i]);
+                                }
+                            }
+                            if (this.buf.length >= 2560) {
+                                const pcm = new Int16Array(this.buf.length);
+                                for (let i = 0; i < this.buf.length; i++) {
+                                    let s = Math.max(-1, Math.min(1, this.buf[i]));
+                                    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
+                                }
+                                this.port.postMessage(pcm.buffer, [pcm.buffer]);
+                                this.buf = [];
+                            }
+                            return true;
+                        }
+                    }
+                    registerProcessor('pcm16-worklet', Pcm16Worklet);
+                `], { type: "text/javascript" })));
+                
+                const src = audioCtx.createMediaStreamSource(stream);
+                const workletNode = new AudioWorkletNode(audioCtx, 'pcm16-worklet');
+                
+                workletNode.port.onmessage = (e) => {
+                    if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
+                        try {
+                            ws.send(e.data);
+                        } catch (error) {
+                            console.error('WebSocket 전송 오류:', error);
+                        }
+                    }
+                };
+                
+                src.connect(workletNode);
+                // 에코 방지: 스피커 출력 연결하지 않음
+                // workletNode.connect(audioCtx.destination);
+                
+                console.log('오디오 스트림 시작됨 (AudioWorklet 방식)');
             }
             
             // 음성 재생 (실제 구현에서는 audio_url 사용)
@@ -821,169 +1178,8 @@ async def simulation_index():
     </html>
     """)
 
-# API 라우터
-@api_router.get("/scenarios")
-async def get_scenarios():
-    """사용 가능한 시나리오 목록 반환"""
-    scenarios = []
-    for scenario_id, scenario in SCENARIOS.items():
-        scenarios.append({
-            "id": scenario["id"],
-            "title": scenario["title"],
-            "description": scenario["description"]
-        })
-    return {"scenarios": scenarios}
-
-@api_router.get("/start/{scenario_id}")
-async def start_scenario(scenario_id: int):
-    """특정 시나리오 시작 - 첫 번째 라운드 정보 제공"""
-    if scenario_id not in SCENARIOS:
-        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-    
-    scenario = SCENARIOS[scenario_id]
-    first_round = scenario["rounds"][0]
-    
-    return {
-        "id": scenario_id,
-        "title": scenario["title"],
-        "current_round": 1,
-        "total_rounds": len(scenario["rounds"]),
-        "question": first_round["question"],
-        "audio_url": first_round["audio_url"]
-    }
-
-@api_router.get("/round/{scenario_id}/{round_number}")
-async def get_round(scenario_id: int, round_number: int):
-    """특정 라운드 정보 제공"""
-    if scenario_id not in SCENARIOS:
-        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-    
-    scenario = SCENARIOS[scenario_id]
-    if round_number < 1 or round_number > len(scenario["rounds"]):
-        raise HTTPException(status_code=404, detail="라운드를 찾을 수 없습니다")
-    
-    round_data = scenario["rounds"][round_number - 1]
-    
-    return {
-        "scenario_id": scenario_id,
-        "round": round_number,
-        "question": round_data["question"],
-        "audio_url": round_data["audio_url"]
-    }
-
-@api_router.post("/answer")
-async def evaluate_answer(request: AnswerRequest):
-    """사용자 답변 평가 - AI가 위험도 판별 + 점수 계산"""
-    try:
-        print(f"[DEBUG] 답변 평가 시작: scenario_id={request.scenario_id}")
-        print(f"[DEBUG] 질문: {request.question}")
-        print(f"[DEBUG] 답변: {request.answer}")
-        
-        # 현재 시나리오와 라운드 정보 가져오기
-        if request.scenario_id not in SCENARIOS:
-            raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-        
-        scenario = SCENARIOS[request.scenario_id]
-        current_round = None
-        
-        # 현재 질문에 해당하는 라운드 찾기
-        for round_data in scenario["rounds"]:
-            if round_data["question"] == request.question:
-                current_round = round_data
-                break
-        
-        if not current_round:
-            raise HTTPException(status_code=404, detail="해당 질문의 라운드를 찾을 수 없습니다")
-        
-        print(f"[DEBUG] 현재 라운드: {current_round}")
-        
-        # 시뮬레이션 전용 AI 분석기 생성
-        analyzer = SimulationAnalyzer()
-        
-        # 시뮬레이션 분석 실행
-        result = analyzer.analyze_simulation_answer(
-            request.question, 
-            request.answer, 
-            current_round["correct_answer"], 
-            current_round["wrong_examples"]
-        )
-        
-        print(f"[DEBUG] 시뮬레이션 분석 결과: {result}")
-        
-        # 시뮬레이션 점수에 따른 위험도 및 점수 계산
-        simulation_score = result.get("simulation_score", 0)
-        
-        if simulation_score == 10:
-            risk_level = "LOW"
-            score = 10
-        elif simulation_score == -5:
-            risk_level = "MEDIUM"
-            score = -5
-        elif simulation_score == -10:
-            risk_level = "HIGH"
-            score = -10
-        else:
-            # 기본값
-            risk_level = "MEDIUM"
-            score = -5
-        
-        # 피드백 생성
-        if risk_level == "HIGH":
-            feedback = "⚠️ 매우 위험한 대답입니다! 실제 보이스피싱에 속을 수 있습니다."
-        elif risk_level == "MEDIUM":
-            feedback = "⚠️ 주의가 필요한 대답입니다. 더 신중하게 생각해보세요."
-        else:
-            feedback = "✅ 좋은 대답입니다! 보이스피싱에 대응하는 올바른 방법입니다."
-        
-        return AnswerResponse(
-            risk=risk_level,
-            score=score,
-            explanation=result.get("explanation", "분석 결과가 없습니다."),
-            feedback=feedback,
-            correct_answer=result.get("correct_answer", ""),
-            wrong_examples=result.get("wrong_examples", [])
-        )
-        
-    except Exception as e:
-        print(f"[ERROR] 답변 평가 실패: {str(e)}")
-        import traceback
-        print(f"[ERROR] 상세 에러: {traceback.format_exc()}")
-        
-        # 에러 발생 시 기본 응답 반환
-        return AnswerResponse(
-            risk="ERROR",
-            score=0,
-            explanation=f"AI 분석 중 오류가 발생했습니다: {str(e)}",
-            feedback="⚠️ 시스템 오류가 발생했습니다. 다시 시도해주세요.",
-            correct_answer="",
-            wrong_examples=[]
-        )
-
-@api_router.post("/result")
-async def save_result(request: ResultRequest):
-    """시뮬레이션 결과 저장 (선택사항)"""
-    # 실제 구현에서는 데이터베이스에 저장
-    # 현재는 메모리에 임시 저장
-    return {
-        "status": "success",
-        "message": "결과가 저장되었습니다.",
-        "data": {
-            "user_id": request.user_id,
-            "scenario_id": request.scenario_id,
-            "risk": request.risk,
-            "score": request.score
-        }
-    }
-
-@api_router.get("/scenario/{scenario_id}")
-async def get_scenario_detail(scenario_id: int):
-    """시나리오 상세 정보 제공"""
-    if scenario_id not in SCENARIOS:
-        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-    
-    return SCENARIOS[scenario_id]
-
-# 메인 라우터 (API + 웹 페이지)
+# 메인 라우터 (API + 웹 페이지 + WebSocket)
 router = APIRouter()
 router.include_router(api_router)
 router.include_router(web_router)
+router.include_router(websocket_router)

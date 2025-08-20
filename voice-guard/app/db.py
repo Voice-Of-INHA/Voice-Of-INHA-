@@ -2,7 +2,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker, declarative_base
 from .config import settings
 
-engine = create_engine(settings.db_url, pool_pre_ping=True, echo=False)
+# SQLite 강제 사용 (환경 변수 무시)
+db_url = "sqlite:///./voiceguard.db"
+engine = create_engine(db_url, pool_pre_ping=True, echo=False)
 SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
 Base = declarative_base()
 

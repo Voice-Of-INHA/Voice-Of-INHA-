@@ -66,6 +66,7 @@ def index():
     <ul>
         <li><code>ws://localhost:8000/ws/analysis</code> - 기존 데모 분석</li>
         <li><code>ws://localhost:8000/voice-guard/ws/stt</code> - AI 실시간 분석</li>
+        <li><code>ws://localhost:8000/simulation/ws/stt</code> - 시뮬레이션 STT</li>
     </ul>
     <p><strong>시뮬레이션 API:</strong></p>
     <ul>
