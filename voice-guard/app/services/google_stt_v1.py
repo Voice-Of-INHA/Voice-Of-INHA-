@@ -1,3 +1,4 @@
+# app/services/google_stt_v1.py
 from google.cloud import speech_v1 as speech
 from urllib.parse import urlparse
 from collections import Counter
@@ -5,6 +6,11 @@ import logging
 import os
 
 log = logging.getLogger("stt")
+if not log.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+    log.addHandler(_h)
+log.setLevel(logging.INFO)
 
 def _guess_encoding_from_uri(gs_uri: str) -> speech.RecognitionConfig.AudioEncoding:
     """
@@ -24,9 +30,8 @@ def _guess_encoding_from_uri(gs_uri: str) -> speech.RecognitionConfig.AudioEncod
 def longrun_diarization_gcs(gs_uri: str, language_code: str = "ko-KR") -> list[dict]:
     """
     GCS의 오디오를 장문 인식 + 화자 분할하여 타임라인 반환.
-    - ko-KR: phone_call/enhanced 조합은 종종 불안정 → model="default" 권장
+    - model="default" + enable_word_time_offsets=True
     - 모든 result의 words를 합쳐서 조립 (일부 환경에서 마지막 result만 words가 꽉 차지 않음)
-    - 단어 타임스탬프/화자 태그가 꼭 나오도록 enable_word_time_offsets=True
     """
     client = speech.SpeechClient()
 
@@ -63,7 +68,7 @@ def longrun_diarization_gcs(gs_uri: str, language_code: str = "ko-KR") -> list[d
     # ── 모든 result의 words를 합쳐 조립 ─────────────────────────────────────────────
     all_words = []
     per_result_counts = []
-    for idx, r in enumerate(resp.results):
+    for r in resp.results:
         if r.alternatives:
             w = r.alternatives[0].words or []
             per_result_counts.append(len(w))
@@ -76,20 +81,23 @@ def longrun_diarization_gcs(gs_uri: str, language_code: str = "ko-KR") -> list[d
     last_end_sec = (
         all_words[-1].end_time.total_seconds() if all_words and all_words[-1].end_time else None
     )
-    spk_dist = Counter([w.speaker_tag for w in all_words])
+    spk_dist = Counter([w.speaker_tag for w in all_words]) if all_words else {}
 
     log.info(
         "[STT] results=%d  words_total=%d  last_end=%.2fs  per_result=%s  spk_dist=%s",
         len(resp.results),
         total_words,
         last_end_sec or -1,
-        per_result_counts[:10] + (["…"] if len(per_result_counts) > 10 else []),
+        per_result_counts[:10] + (['…'] if len(per_result_counts) > 10 else []),
         dict(spk_dist),
     )
 
     if total_words == 0:
         # 드물게 diarization words가 비어 있으면 전체 transcript를 로그로 남겨 원인 파악
-        sample_txt = (resp.results[-1].alternatives[0].transcript[:120] + "…") if resp.results and resp.results[-1].alternatives else ""
+        sample_txt = (
+            resp.results[-1].alternatives[0].transcript[:160]
+            if resp.results and resp.results[-1].alternatives else ""
+        )
         log.warning("[STT] words empty (diarization). last transcript sample=%r", sample_txt)
         return []
 
@@ -118,7 +126,7 @@ def longrun_diarization_gcs(gs_uri: str, language_code: str = "ko-KR") -> list[d
             {"t": _sec_to_tag(cur_start or 0.0), "spk": cur_spk, "text": " ".join(cur_words)}
         )
 
-    # 역할 라벨링(간단 규칙). 필요하면 나중에 '첫 발화자=USER' 대신 통계 기반으로 개선 가능.
+    # 간단 역할 라벨 (필요시 후처리에서 바꿔도 됨)
     for seg in timeline:
         seg["role"] = "USER" if seg["spk"] == 1 else "SCAMMER"
 

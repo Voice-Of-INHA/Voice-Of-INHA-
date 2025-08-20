@@ -5,10 +5,10 @@ import time
 import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
 
 from ..services.gcs_transfer import s3_to_gcs, parse_any_s3_url
-from google.cloud import speech_v1 as speech
+from ..services.google_stt_v1 import longrun_diarization_gcs  # ← STT 모듈 분리 사용
+
 from google import genai
 from google.genai import types
 
@@ -61,60 +61,6 @@ def _vertex_client():
     if not proj:
         raise RuntimeError("GCP_PROJECT_ID is required")
     return genai.Client(vertexai=True, project=proj, location=loc)
-
-def _guess_encoding_from_uri(gs_uri: str):
-    ext = os.path.splitext(urlparse(gs_uri).path)[1].lower()
-    if ext in (".webm", ".weba"):
-        return speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
-    if ext in (".ogg", ".opus"):
-        return speech.RecognitionConfig.AudioEncoding.OGG_OPUS
-    if ext in (".wav",):
-        return speech.RecognitionConfig.AudioEncoding.LINEAR16
-    return speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED
-
-# ---------------- Google STT v1 (장문 + 화자 분할) ----------------
-def _longrun_diarization_gcs(gs_uri: str, language_code="ko-KR") -> List[Dict[str, Any]]:
-    client = speech.SpeechClient()
-    diar = speech.SpeakerDiarizationConfig(
-        enable_speaker_diarization=True, min_speaker_count=2, max_speaker_count=2
-    )
-    encoding = _guess_encoding_from_uri(gs_uri)
-
-    # ko-KR은 phone_call 미지원 → 기본 모델 사용
-    cfg_kwargs: Dict[str, Any] = dict(
-        language_code=language_code,
-        enable_automatic_punctuation=True,
-        diarization_config=diar,
-        model="default",
-        audio_channel_count=1,
-        enable_separate_recognition_per_channel=False,
-    )
-    if encoding != speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED:
-        cfg_kwargs["encoding"] = encoding
-
-    cfg = speech.RecognitionConfig(**cfg_kwargs)
-    op = client.long_running_recognize(config=cfg, audio=speech.RecognitionAudio(uri=gs_uri))
-    resp = op.result(timeout=3*60*60)
-    if not resp.results:
-        return []
-
-    words = resp.results[-1].alternatives[0].words
-    tl: List[Dict[str, Any]] = []
-    cur_spk, cur_words, cur_start = None, [], None
-    for w in words:
-        spk = w.speaker_tag
-        st = w.start_time.total_seconds() if w.start_time else 0.0
-        if cur_spk != spk:
-            if cur_words:
-                tl.append({"t": _sec_to_tag(cur_start or 0.0), "spk": cur_spk, "text": " ".join(cur_words)})
-            cur_spk, cur_words, cur_start = spk, [], st
-        cur_words.append(w.word)
-    if cur_words:
-        tl.append({"t": _sec_to_tag(cur_start or 0.0), "spk": cur_spk, "text": " ".join(cur_words)})
-
-    for seg in tl:
-        seg["role"] = "USER" if seg["spk"] == 1 else "SCAMMER"
-    return tl
 
 # ---------------- LLM 프롬프트 ----------------
 _FINAL_REPORT_PROMPT = """
@@ -204,7 +150,7 @@ class LlmFinalAnalyzer:
             # -------- STT --------
             t_stt = time.time()
             _log("STT_START", call_id=call_id, gs_uri=gs_uri)
-            timeline = _longrun_diarization_gcs(gs_uri, language_code="ko-KR")
+            timeline = longrun_diarization_gcs(gs_uri, language_code="ko-KR")  # ← 분리된 STT 사용
             ms_stt = int((time.time()-t_stt)*1000)
 
             # STT 요약 + 전체 타임라인/트랜스크립트 로깅
@@ -212,12 +158,10 @@ class LlmFinalAnalyzer:
             words = sum(len(seg["text"].split()) for seg in timeline)
             _log("STT_DONE", call_id=call_id, ms=ms_stt, segments=segs, approx_words=words)
 
+            transcript_full = _to_llm_text(timeline)
             if _LOG_STT_FULL:
                 _log_big("STT_TIMELINE_FULL", {"call_id": call_id, "timeline": timeline})
-                transcript_full = _to_llm_text(timeline)
                 _log_big("STT_TRANSCRIPT_FULL", {"call_id": call_id, "transcript": transcript_full})
-            else:
-                transcript_full = _to_llm_text(timeline)
 
             # -------- LLM --------
             t_llm = time.time()
