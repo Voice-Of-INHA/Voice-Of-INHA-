@@ -121,58 +121,81 @@ async def ws_stt(ws: WebSocket):
                 if payload.get("is_final"):
                     # FINAL 결과
                     text = payload.get("transcript", "")
-                    await ws.send_text(f"[FINAL] {text}")
+                    
+                    # PowerShell 콘솔에 직접 출력
+                    print(f"[FINAL] 🎯 STT 최종 결과: '{text}'")
+                    await ws.send_text(f"[FINAL] 🎯 STT 최종 결과: '{text}'")
                     
                     # 1단계: 룰 필터링
                     labels = rule_hit_labels(text)
+                    print(f"[FILTER] 룰 필터 결과: {labels}")
                     await ws.send_text(f"[FILTER] 룰 필터 결과: {labels}")
                     
                     # 2단계: 분석 실행 및 점수 계산
                     current_score = 0
                     
                     if labels:  # 룰 필터에 걸린 경우
+                        print(f"[RULE_SCORE] 룰 기반 점수 계산...")
                         await ws.send_text(f"[RULE_SCORE] 룰 기반 점수 계산...")
                         # 새로운 형식으로 rule filter 결과 반환
                         rule_data = analyze_rule_based(text)
                         current_score = rule_data.get("riskScore", 0)
+                        print(f"[RISK] {rule_data}")
                         await ws.send_text(f"[RISK] {rule_data}")
                     else:  # 룰 필터에 걸리지 않은 경우
+                        print(f"[ANALYSIS] LLM 분석 시작...")
                         await ws.send_text(f"[ANALYSIS] LLM 분석 시작...")
                         try:
                             analyzer = VertexRiskAnalyzer()
                             # 현재 발화만 분석 (문맥 제한하여 이전 발화 영향 방지)
                             data = analyzer.analyze(text, [])  # 빈 문맥으로 전달
                             current_score = data.get("riskScore", 0)
+                            print(f"[RISK] {data}")
                             await ws.send_text(f"[RISK] {data}")
                         except Exception as e:
+                            print(f"[RISK_ERROR] {e}")
                             await ws.send_text(f"[RISK_ERROR] {e}")
                             # LLM 분석 실패 시 명시적으로 0점 설정
                             current_score = 0
+                            print(f"[DEBUG] LLM 분석 실패로 0점 설정")
                             await ws.send_text(f"[DEBUG] LLM 분석 실패로 0점 설정")
                     
                     # 디버깅: 현재 점수 확인
+                    print(f"[DEBUG] 현재 발화 점수: {current_score}점")
                     await ws.send_text(f"[DEBUG] 현재 발화 점수: {current_score}점")
                     
                     # 3단계: 누적 점수 계산 및 출력
                     total_risk_score += current_score
                     session_utterances.append(text)
                     
+                    print(f"[ACCUMULATED] 누적 점수: {total_risk_score}점 (현재: +{current_score}점)")
                     await ws.send_text(f"[ACCUMULATED] 누적 점수: {total_risk_score}점 (현재: +{current_score}점)")
                     
                     # 4단계: 위험도 단계별 경고 (100점 체계)
                     if total_risk_score >= 80:
-                        await ws.send_text(f"[WARNING] 🚨 위험도 초과! 누적 점수: {total_risk_score}점 - 즉시 통화 종료 권장!")
+                        warning_msg = f"[WARNING] 🚨 위험도 초과! 누적 점수: {total_risk_score}점 - 즉시 통화 종료 권장!"
+                        print(warning_msg)
+                        await ws.send_text(warning_msg)
                     elif total_risk_score >= 60:
-                        await ws.send_text(f"[WARNING] ⚠️ 위험도 매우 높음! 누적 점수: {total_risk_score}점 - 즉시 경계 필요!")
+                        warning_msg = f"[WARNING] ⚠️ 위험도 매우 높음! 누적 점수: {total_risk_score}점 - 즉시 경계 필요!"
+                        print(warning_msg)
+                        await ws.send_text(warning_msg)
                     elif total_risk_score >= 40:
-                        await ws.send_text(f"[WARNING] ⚠️ 위험도 높음! 누적 점수: {total_risk_score}점 - 주의 필요!")
+                        warning_msg = f"[WARNING] ⚠️ 위험도 높음! 누적 점수: {total_risk_score}점 - 주의 필요!"
+                        print(warning_msg)
+                        await ws.send_text(warning_msg)
                     elif total_risk_score >= 20:
-                        await ws.send_text(f"[WARNING] ⚠️ 위험도 증가! 누적 점수: {total_risk_score}점 - 경계 필요!")
+                        warning_msg = f"[WARNING] ⚠️ 위험도 증가! 누적 점수: {total_risk_score}점 - 경계 필요!"
+                        print(warning_msg)
+                        await ws.send_text(warning_msg)
                     elif total_risk_score >= 10:
-                        await ws.send_text(f"[INFO] ℹ️ 위험도 감지! 누적 점수: {total_risk_score}점 - 주의 필요!")
+                        info_msg = f"[INFO] ℹ️ 위험도 감지! 누적 점수: {total_risk_score}점 - 주의 필요!"
+                        print(info_msg)
+                        await ws.send_text(info_msg)
                 else:
                     # PARTIAL 결과
                     text = payload.get("transcript", "")
+                    print(f"[PART] {text}")
                     await ws.send_text(f"[PART] {text}")
             
             elif payload.get("type") == "error":
