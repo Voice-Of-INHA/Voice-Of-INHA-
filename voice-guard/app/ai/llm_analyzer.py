@@ -2,6 +2,9 @@
 import os, json
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from ..services.gcs_transfer import s3_to_gcs, parse_any_s3_url
+
+
 
 import boto3
 from google.cloud import storage
@@ -122,39 +125,71 @@ def _call_llm_final_report(full_text: str) -> Dict[str, Any]:
 class LlmFinalAnalyzer:
     @staticmethod
     def run_full_analysis(call_id: int, s3_url: Optional[str] = None) -> None:
-        """S3→GCS→장문STT→LLM→callAnalysis 저장"""
+        """
+        입력 URL이 gs:// 면 그대로 사용
+        s3:// 또는 https://amazonaws.com/... 이면 S3→GCS 복사 후 사용
+        """
         db = SessionLocal()
         try:
             log = db.query(CallLog).filter(CallLog.id == call_id).first()
-            if not log and not s3_url: raise ValueError("callId not found and s3_url not provided")
+            if not log and not s3_url:
+                raise ValueError("callId not found and s3_url not provided")
 
             row = db.query(CallAnalysis).filter(CallAnalysis.callId == call_id).first()
             if not row:
-                row = CallAnalysis(callId=call_id, status="RUNNING", triggeredAt=datetime.utcnow())
-                db.add(row); db.commit(); db.refresh(row)
+                row = CallAnalysis(
+                    callId=call_id,
+                    status="RUNNING",
+                    triggeredAt=datetime.utcnow()
+                )
+                db.add(row)
+                db.commit()
+                db.refresh(row)
 
-            s3_src = s3_url or getattr(log, "audioS3Url", None) or getattr(row, "audioS3Url", None)
-            if not s3_src: raise ValueError("audio S3 URL not set")
+            # audioUrl / audioS3Url 어느 쪽이든 먼저 잡아씀
+            source_url = (
+                s3_url
+                or getattr(log, "audioUrl", None)
+                or getattr(log, "audioS3Url", None)
+                or getattr(row, "audioUrl", None)
+                or getattr(row, "audioS3Url", None)
+            )
+            if not source_url:
+                raise ValueError("audio S3 URL not set")
 
-            gcs_key = f"calls/{call_id}.audio"
-            gs_uri = _s3_to_gcs(s3_src, settings.gcs_bucket, gcs_key)
+            # 1) 이미 GCS URI면 그대로
+            if source_url.startswith("gs://"):
+                gs_uri = source_url
+
+            # 2) s3:// 또는 https://amazonaws.com/... 이면 복사
+            elif source_url.startswith("s3://") or source_url.startswith("http"):
+                # S3 키의 파일명 일부를 보존해 GCS 키 구성
+                _, s3_key = parse_any_s3_url(source_url)
+                base_name = os.path.basename(s3_key) or f"{call_id}.audio"
+                gcs_key = f"calls/{call_id}/{base_name}"
+                gs_uri = s3_to_gcs(source_url, settings.gcs_bucket, gcs_key)
+
+            else:
+                raise ValueError(f"Unsupported audio URL: {source_url}")
+
+            # 복사 결과(GCS URI) 저장
             row.audioGcsUri = gs_uri
             db.commit()
 
+            # --- STT → LLM 분석 파이프라인 (기존 로직 그대로 호출) ---
             timeline = _longrun_diarization_gcs(gs_uri, language_code="ko-KR")
             full_text = _to_llm_text(timeline)
-
             report = _call_llm_final_report(full_text)
-            summary = (report.get("summary") or "")[:255]
-            ctype = (report.get("crime_types") or [None])[0]
 
             row.transcript = full_text
             row.report = report
-            row.summary = summary
-            row.crimeType = ctype
+            row.summary = (report.get("summary") or "")[:255]
+            types_ = report.get("crime_types") or []
+            row.crimeType = types_[0] if types_ else None
             row.status = "DONE"
             row.completedAt = datetime.utcnow()
             db.commit()
+
         except Exception as e:
             row = db.query(CallAnalysis).filter(CallAnalysis.callId == call_id).first()
             if row:

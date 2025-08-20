@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Dict, Any
-import os, re, json, tempfile, shutil, subprocess
+import os, re, json, tempfile
 
 
 # ===============================
@@ -49,9 +49,7 @@ class SimulationAnalyzer:
     def _generate_with_models(self, prompt: str) -> str:
         from google.genai import types
         models = [
-            os.getenv("SIMULATION_MODEL") or "gemini-2.0-flash",
-            "gemini-1.5-flash-002",
-            "gemini-1.5-pro-002",
+            "gemini-2.5-flash"
         ]
         last = None
         for m in models:
@@ -61,7 +59,7 @@ class SimulationAnalyzer:
                     contents=prompt,
                     config=types.GenerateContentConfig(
                         temperature=0.1,
-                        max_output_tokens=1024,
+                        max_output_tokens=2048,
                         response_mime_type="application/json",
                     ),
                 )
@@ -201,17 +199,13 @@ async def analyze(request: BulkAnalyzeRequest):
     return AnalyzeResponse(**result)
 
 
-# === STT 업로드 엔드포인트 (프론트: WebM 업로드 → 서버: ffmpeg로 WAV 변환) ===
+# === STT 업로드 엔드포인트 (프론트: WAV 업로드 → 서버: 바로 STT) ===
 @api_router.post("/stt")
 async def stt(audio_file: UploadFile = File(...)):
     """
-    프론트는 audio/webm(코덱: opus) 업로드.
-    서버에서 ffmpeg로 16kHz mono LINEAR16 WAV로 변환 후 Google STT 호출.
+    프론트에서 이미 WebM→WAV(16kHz mono PCM s16le)로 변환하여 업로드.
+    서버는 WAV를 그대로 Google STT에 전달.
     """
-    # ffmpeg 체크
-    if not shutil.which("ffmpeg"):
-        return {"success": False, "error": "ffmpeg 미설치. 서버에 ffmpeg를 설치하세요."}
-
     try:
         # ADC(서비스계정) 준비
         def _adc():
@@ -227,34 +221,16 @@ async def stt(audio_file: UploadFile = File(...)):
 
         _adc()
 
-        # 업로드 저장 (확장자 webm 고정)
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_in:
+        # 업로드 WAV 임시 저장
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
             raw = await audio_file.read()
-            tmp_in.write(raw)
-            in_path = tmp_in.name
-
-        # ffmpeg로 16k mono LINEAR16 WAV 변환
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_out:
-            out_path = tmp_out.name
-
-        cmd = [
-            "ffmpeg",
-            "-y",
-            "-i", in_path,
-            "-ac", "1",
-            "-ar", "16000",
-            "-acodec", "pcm_s16le",
-            out_path
-        ]
-        try:
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-        except subprocess.CalledProcessError as ce:
-            return {"success": False, "error": f"ffmpeg 변환 실패: {ce.stderr.decode(errors='ignore')[:500]}"}
+            tmp.write(raw)
+            wav_path = tmp.name
 
         # Google STT 호출
         from google.cloud import speech
         client = speech.SpeechClient()
-        with open(out_path, "rb") as f:
+        with open(wav_path, "rb") as f:
             wav = f.read()
 
         audio = speech.RecognitionAudio(content=wav)
@@ -264,7 +240,7 @@ async def stt(audio_file: UploadFile = File(...)):
             enable_automatic_punctuation=True,
             model="latest_short",
             max_alternatives=1,
-            sample_rate_hertz=16000,
+            sample_rate_hertz=16000,  # 프론트에서 16kHz로 리샘플됨
         )
         resp = client.recognize(config=cfg, audio=audio)
         text = ""
@@ -277,19 +253,16 @@ async def stt(audio_file: UploadFile = File(...)):
     except Exception as e:
         return {"success": False, "error": str(e)}
     finally:
-        # 임시 파일 정리
-        for p in ["in_path", "out_path"]:
-            try:
-                path = locals().get(p)
-                if path and os.path.exists(path):
-                    os.unlink(path)
-            except Exception:
-                pass
+        try:
+            if 'wav_path' in locals() and os.path.exists(wav_path):
+                os.unlink(wav_path)
+        except Exception:
+            pass
 
 
 # ===============================
 # 초미니 HTML (하드코딩 Q1~Q3 + 발화 끝남 버튼)
-#   - 프론트: WebM 그대로 업로드 (브라우저 WAV 변환 제거)
+#   - 프론트: WebM 녹음 → 브라우저에서 WAV(16k/mono/PCM16) 변환 → 업로드
 # ===============================
 web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
 
@@ -297,7 +270,7 @@ web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
 @web_router.get("/", response_class=HTMLResponse)
 async def simulation_index():
     return HTMLResponse("""
-<!doctype html><meta charset="utf-8"><title>보이스피싱 시뮬(하드코딩, WebM 업로드)</title>
+<!doctype html><meta charset="utf-8"><title>보이스피싱 시뮬(하드코딩, 브라우저 WAV 업로드)</title>
 <style>
 body{font:14px system-ui,Segoe UI,Arial;margin:24px}
 button{padding:8px 12px;margin:6px 6px 0 0}
@@ -306,8 +279,8 @@ pre{background:#f6f7f9;padding:10px;border-radius:8px;white-space:pre-wrap;margi
 .small{color:#666}
 code{background:#eef;padding:2px 4px;border-radius:4px}
 </style>
-<h3>Q1/Q2/Q3 · 발화 끝남 → WebM 업로드 → 서버에서 WAV 변환 → STT</h3>
-<div class="small">※ Q버튼을 누르면 질문 텍스트가 추가되고, 즉시 녹음을 시작합니다(침묵 1초 후 자동 종료).</div>
+<h3>Q1/Q2/Q3 · 발화 끝남 → WebM 녹음 → 브라우저에서 WAV 변환 → STT</h3>
+<div class="small">※ Q버튼을 누르면 질문이 추가되고, 자동 녹음 후 침묵 1초면 종료됩니다.</div>
 <div>
   <button onclick="onQ(1)">Q1 발화 끝남</button>
   <button onclick="onQ(2)">Q2 발화 끝남</button>
@@ -361,9 +334,9 @@ async function startRecording(turn){
     mediaRecorder.onstop = async () => {
       try{
         stream.getTracks().forEach(t=>t.stop());
-        // WebM 그대로 서버 업로드
         const webm = new Blob(chunks, {type:'audio/webm;codecs=opus'});
-        await doSTT(webm, turn);
+        const wav = await toWavResampled(webm, 16000); // ← 브라우저에서 WAV로 변환
+        await doSTT(wav, turn);
       }catch(e){
         appendLine(`A${turn}: (STT 실패: ${e})`);
         show('STT 실패: '+e);
@@ -376,7 +349,6 @@ async function startRecording(turn){
     isRecording = true;
     show(`Q${turn} 녹음 시작… (침묵 1초 시 자동 종료)`);
 
-    // 최대 50초 제한
     hardTimeout = setTimeout(() => {
       if(isRecording) { show('최대 녹음 시간(50초) 도달, 자동 종료'); stopRecording(); }
     }, 50000);
@@ -423,8 +395,42 @@ function detectSilence(onSilence, timeoutMs, threshold){
   loop();
 }
 
-async function doSTT(webmBlob, turn){
-  const fd = new FormData(); fd.append('audio_file', webmBlob, `a${turn}.webm`);
+// WebM → AudioBuffer → OfflineAudioContext(모노, 16kHz) → WAV
+async function toWavResampled(webmBlob, targetRate){
+  const arr = await webmBlob.arrayBuffer();
+  const ac2 = new (window.AudioContext||window.webkitAudioContext)();
+  const srcBuffer = await ac2.decodeAudioData(arr);
+  const frames = Math.ceil(srcBuffer.duration * targetRate);
+  const off = new OfflineAudioContext(1, frames, targetRate);
+  const src = off.createBufferSource();
+  src.buffer = srcBuffer;
+  src.connect(off.destination);
+  src.start(0);
+  const rendered = await off.startRendering();
+  ac2.close();
+  return new Blob([bufferToWav(rendered)], {type:'audio/wav'});
+}
+
+function bufferToWav(buffer){
+  const ch = 1, len = buffer.length, rate = buffer.sampleRate;
+  const ab = new ArrayBuffer(44 + len*ch*2);
+  const v = new DataView(ab);
+  const w = (o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+len*ch*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,ch,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*ch*2,true); v.setUint16(32,ch*2,true);
+  v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,len*ch*2,true);
+  let off=44, data = buffer.getChannelData(0);
+  for(let i=0;i<len;i++){
+    let s = Math.max(-1,Math.min(1,data[i]));
+    v.setInt16(off, s<0 ? s*0x8000 : s*0x7FFF, true);
+    off+=2;
+  }
+  return ab;
+}
+
+async function doSTT(wavBlob, turn){
+  const fd = new FormData(); fd.append('audio_file', wavBlob, `a${turn}.wav`);
   const res = await fetch('/api/simulation/stt', {method:'POST', body:fd});
   let line;
   try{
@@ -455,7 +461,6 @@ async function analyze(){
   const data = await res.json();
   if(!res.ok){ show('에러: '+(data.detail||res.statusText)); return; }
 
-  // 상단 요약 + LLM 전체 JSON 같이 보여주기
   const pretty = JSON.stringify(data.llm, null, 2);
   show(
 `위험도: ${data.risk}
