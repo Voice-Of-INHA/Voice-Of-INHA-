@@ -5,6 +5,7 @@ import threading
 import traceback
 import time
 from typing import Optional
+import os
 
 from google.cloud import speech_v1 as speech
 
@@ -148,3 +149,40 @@ class GoogleStreamingSTT:
         if self._thread:
             self._thread.join(timeout=3.0)
             self._thread = None
+
+
+class STTService:
+    """파일 기반 STT 서비스"""
+
+    def __init__(self):
+        self.client = speech.SpeechClient()
+
+    async def transcribe_file(self, file_path: str) -> str:
+        """음성 파일을 텍스트로 변환"""
+        try:
+            # 파일 읽기
+            with open(file_path, "rb") as audio_file:
+                content = audio_file.read()
+
+            # STT 설정 - 샘플링 레이트 자동 감지
+            config = speech.RecognitionConfig(
+                encoding=speech.RecognitionConfig.AudioEncoding.WEBM_OPUS,  # 브라우저 녹음 형식
+                language_code="ko-KR",
+                enable_automatic_punctuation=True,
+                # sample_rate_hertz는 자동 감지되도록 제거
+            )
+
+            # STT 요청
+            audio = speech.RecognitionAudio(content=content)
+            response = self.client.recognize(config=config, audio=audio)
+
+            # 결과 추출
+            transcript = ""
+            for result in response.results:
+                transcript += result.alternatives[0].transcript + " "
+
+            return clean_text(transcript)
+
+        except Exception as e:
+            print(f"[ERROR] STT 파일 변환 실패: {str(e)}")
+            raise e
