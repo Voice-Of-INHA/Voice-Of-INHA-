@@ -43,7 +43,7 @@ export default function SimulationResultPage() {
         console.log('저장된 결과 데이터:', data)
         
         // 총점 계산
-        const totalScore = data.allRounds.reduce((sum: number, round: any) => sum + round.score, 0)
+        const totalScore = data.allRounds.reduce((sum: number, round: { score: number }) => sum + round.score, 0)
         const averageScore = totalScore / data.allRounds.length
         
         // 전체 위험도 판정
@@ -58,7 +58,7 @@ export default function SimulationResultPage() {
           totalRounds: data.allRounds.length,
           finalScore: totalScore,
           overallRisk: overallRisk,
-          roundResults: data.allRounds.map((round: any, index: number) => ({
+          roundResults: data.allRounds.map((round: { answer: string; risk: string; score: number; explanation: string }, index: number) => ({
             round: index + 1,
             userAnswer: round.answer,
             riskLevel: round.risk,
@@ -235,7 +235,7 @@ export default function SimulationResultPage() {
                     </span>
                   </div>
                   <div className="text-sm text-gray-400 mb-2">
-                    답변: "{round.userAnswer}"
+                    답변: &ldquo;{round.userAnswer}&rdquo;
                   </div>
                   <div className="text-sm">
                     → {round.explanation} (점수: {round.score > 0 ? '+' : ''}{round.score})

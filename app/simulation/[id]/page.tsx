@@ -463,7 +463,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         {currentRoundData && (
           <div className="border border-white p-6 mb-8">
             <h2 className="text-xl font-semibold mb-4">질문:</h2>
-            <p className="text-lg mb-6 leading-relaxed">"{currentRoundData.question}"</p>
+            <p className="text-lg mb-6 leading-relaxed">&ldquo;{currentRoundData.question}&rdquo;</p>
             
             {/* 오디오 재생 */}
             <div className="flex items-center gap-4">
@@ -536,7 +536,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
             <div className="space-y-3">
               <div>
                 <span className="text-gray-400">사용자 답변:</span>
-                <span className="ml-2 text-white">"{analysisResult.answer}"</span>
+                <span className="ml-2 text-white">&ldquo;{analysisResult.answer}&rdquo;</span>
               </div>
               
               <div className="flex items-center gap-2">
@@ -548,7 +548,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
               
               <div>
                 <span className="text-gray-400">→ 설명:</span>
-                <span className="ml-2 text-white">"{analysisResult.explanation}"</span>
+                <span className="ml-2 text-white">&ldquo;{analysisResult.explanation}&rdquo;</span>
               </div>
             </div>
           </div>

@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 
 export default function SimulationPage() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking')
-  const [scenarios, setScenarios] = useState<any[]>([])
+  const [scenarios, setScenarios] = useState<Array<{ id: string; title: string; description?: string }>>([])
   const [selectedScenario, setSelectedScenario] = useState<string>('')
   const [loading, setLoading] = useState(false)
   const [showScenarios, setShowScenarios] = useState(false)
@@ -43,9 +43,25 @@ export default function SimulationPage() {
         setScenarios(data)
       } else {
         console.error('시나리오 목록 불러오기 실패')
+        // 임시 더미 데이터
+        setScenarios([
+          { id: '1', title: '검찰/경찰 사칭', description: '검찰청 수사관을 사칭하여 대포통장 개설 의혹을 제기하는 시나리오' },
+          { id: '2', title: '대출 사기', description: '저금리 대출을 미끼로 수수료를 요구하는 시나리오' },
+          { id: '3', title: '택배 사기', description: '택배 보관료 명목으로 돈을 요구하는 시나리오' },
+          { id: '4', title: '아르바이트 사기', description: '고수익 아르바이트를 빌미로 선급금을 요구하는 시나리오' },
+          { id: '5', title: '가족 납치', description: '가족 납치를 가장하여 몸값을 요구하는 시나리오' }
+        ])
       }
     } catch (error) {
       console.error('시나리오 목록 불러오기 오류:', error)
+      // 오류 시에도 더미 데이터 제공
+      setScenarios([
+        { id: '1', title: '검찰/경찰 사칭', description: '검찰청 수사관을 사칭하여 대포통장 개설 의혹을 제기하는 시나리오' },
+        { id: '2', title: '대출 사기', description: '저금리 대출을 미끼로 수수료를 요구하는 시나리오' },
+        { id: '3', title: '택배 사기', description: '택배 보관료 명목으로 돈을 요구하는 시나리오' },
+        { id: '4', title: '아르바이트 사기', description: '고수익 아르바이트를 빌미로 선급금을 요구하는 시나리오' },
+        { id: '5', title: '가족 납치', description: '가족 납치를 가장하여 몸값을 요구하는 시나리오' }
+      ])
     } finally {
       setLoading(false)
     }
