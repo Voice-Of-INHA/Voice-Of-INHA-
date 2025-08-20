@@ -1,1143 +1,468 @@
 # app/routers/simulation.py
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
-from typing import List, Dict, Any
-import json
-import re
+from typing import Dict, Any
+import os, re, json, tempfile
 
-from ..ai import VertexRiskAnalyzer, GoogleStreamingSTT
-
-# 시뮬레이션 전용 AI 분석기
+# ===============================
+# 시뮬레이션 전용 LLM 분석기
+# ===============================
 class SimulationAnalyzer:
-    """시뮬레이션 전용 AI 분석기 - 질문 대비 답변 정확성 평가"""
-    
     def __init__(self):
-        # risk_analyzer와 동일한 클라이언트 생성 방식 사용
         self.client = self._make_vertex_client()
-    
+
     def _make_vertex_client(self):
-        """risk_analyzer와 동일한 Vertex AI 클라이언트 생성"""
-        import os
         from google import genai
-        
         project = os.getenv("GCP_PROJECT_ID")
         location = os.getenv("GCP_LOCATION", "us-central1")
         if not project:
             raise RuntimeError("GCP_PROJECT_ID 환경변수를 설정하세요.")
-        
-        # risk_analyzer와 동일한 패턴: vertexai=True로 클라이언트 생성
         return genai.Client(vertexai=True, project=project, location=location)
-    
-    def _extract_json(self, text: str) -> str:
-        """코드펜스/주석/앞뒤 잡음 제거 후 JSON 본문만 추출"""
-        if not text:
+
+    def _extract_json(self, txt: str) -> str:
+        if not txt:
             return ""
-        # ```json ... ``` 또는 ``` ... ``` 안쪽만
-        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, flags=re.S)
+        m = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", txt, flags=re.S)
         if m:
             return m.group(1)
-        # 첫 '{'부터 마지막 '}'까지
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            return text[start:end+1]
-        return text.strip()
-    
+        s, e = txt.find("{"), txt.rfind("}")
+        if s != -1 and e != -1 and e > s:
+            return txt[s:e+1]
+        return txt.strip()
+
     def _lenient_json_loads(self, s: str) -> dict:
-        """자잘한 포맷 오류를 관용적으로 복구해서 dict로"""
-        s = s.strip()
+        s = (s or "").strip()
         if not s:
             return {}
-        # 단일 따옴표 → 이중 따옴표 (키/문자열에 한함)
         if "'" in s and '"' not in s:
             s = re.sub(r"'", '"', s)
-        # 꼬리 콤마 제거
         s = re.sub(r",\s*([}\]])", r"\1", s)
-        # 중괄호 균형 맞추기 (간단 보정)
         if s.count("{") > s.count("}"):
             s += "}" * (s.count("{") - s.count("}"))
         try:
             return json.loads(s)
         except Exception:
             return {}
-    
-    def _call_simulation_llm(self, prompt: str) -> dict:
-        """
-        risk_analyzer와 '같은 로직'으로 호출:
-        - 같은 SDK (google-genai)
-        - 같은 클라이언트 생성 방식 (vertexai=True)
-        - JSON을 강제하려고 response_mime_type 사용 시도
-        """
+
+    def _generate_with_models(self, prompt: str) -> str:
         from google.genai import types
-        
-        resp = self.client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.1,
-                max_output_tokens=1024,
-                response_mime_type="application/json",  # 되도록 JSON만 받도록 유도
-            ),
-        )
-        
-        text = getattr(resp, "text", "") or ""
-        if not text:
-            # 혹시 text가 비면 candidates에서 보정
+        models = [
+            os.getenv("SIMULATION_MODEL") or "gemini-2.0-flash",
+            "gemini-1.5-flash-002",
+            "gemini-1.5-pro-002",
+        ]
+        last = None
+        for m in models:
             try:
-                text = resp.candidates[0].content.parts[0].text
-            except Exception:
-                text = ""
-        
-        body = self._extract_json(text)
-        data = self._lenient_json_loads(body)
-        return data or {}
+                resp = self.client.models.generate_content(
+                    model=m,
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        temperature=0.1,
+                        max_output_tokens=1024,
+                        response_mime_type="application/json",
+                    ),
+                )
+                text = getattr(resp, "text", "") or ""
+                if not text:
+                    try:
+                        text = resp.candidates[0].content.parts[0].text
+                    except Exception:
+                        text = ""
+                if text.strip():
+                    return text
+            except Exception as e:
+                last = e
+                continue
+        if last:
+            raise last
+        return ""
 
-    
-    def analyze_simulation_answer(self, question: str, answer: str, correct_answer: str, wrong_examples: List[str]) -> Dict[str, Any]:
-        """시뮬레이션 답변 분석 - 질문 대비 답변 정확성 평가"""
-        
-        # === 시뮬 전용 프롬프트(원하시는 룰은 그대로 유지) ===
+    def analyze_dialogue(self, transcript: str) -> Dict[str, Any]:
+        # 총합 코칭용 프롬프트
         prompt = f"""
-당신은 '보이스피싱 대응 훈련'을 위한 교육용 시뮬레이션 평가기입니다. 
-개인정보를 생성하거나 요구하지 말고, 오직 점수 산출과 간단한 이유만 제시하세요.
-그리고 각 필드를 반드시 채우세요. 형식을 반드시 유지해야합니다.
+너의 역할: ‘보이스피싱 대응 훈련’에서 사용자의 **전체 대응 패턴**을 코치처럼 평가하는 전문가.
+입력은 Q1/A1, Q2/A2, Q3/A3로 구성된 **대화 전체 기록**이며, 각 턴별이 아니라 **총합 관점**에서만 피드백을 준다.
+개인정보(주민번호, 계좌, OTP, 인증번호 등)를 새로 **생성·추정·요구 금지**. 링크/앱을 제안하거나 상호작용 유도 금지.
+**오직 JSON만** 출력하라(코드펜스·설명문 금지).
 
-[시나리오 질문]: {question}
-[사용자 답변]: {answer}
-[올바른 답변 예시]: {correct_answer}
-[잘못된 답변 예시들]: {', '.join(wrong_examples)}
+[입력 대화]
+{transcript}
 
-[평가 규칙]
-- 올바른 답변과 유사: simulation_score = 10
-- 잘못된 답변과 유사: simulation_score = -10
-- 그 외: simulation_score = -5
-- 반드시 -10, -5, 10 중 하나만 사용.
+[평가 목표(총합 관점)]
+- 사용자의 전반적 대응 습관을 파악: 거절/지연/직접확인/대면요구 등 **안전 습관** vs. 권위·긴급성에 휘둘림, 정보 누설, 송금·앱 설치 의사 표명 등 **위험 습관**.
+- “왜 위험한지”를 사용자 관점으로 설명하고, “다음엔 어떻게 할지”를 **행동 지침**으로 제시.
+- 상황을 일반화한 **개선 답변 템플릿**(예: 개인정보요구/송금강요/앱·링크 설치요구)을 제공.
 
-[반드시 JSON만 출력]
+[채점 규칙(0~100, 하나의 score만)]
+- 기본 100점에서 위험 신호를 차감하고, 안전 신호를 소폭 가산. 최종 0~100로 클램프.
+  · **중대 위험 차감(예시)**: 민감정보 제공·낭독(-40~-60), 송금/결제 동의·문의(-35~-50), 원격제어/앱 설치 의사(-35~-50)
+  · **중간 위험 차감**: 신분증/카드정보 일부 제공, 유도 질문에 순응(-15~-30), 링크·첨부 실행 의사(-15~-30)
+  · **경미 위험 차감**: ‘왜 필요한지’만 묻고 끊지 않음, 추가 검증 부재(-5~-10)
+  · **안전 가점(소폭)**: 전화 즉시 종료/콜백 제안, **공식 채널·대면 확인** 고집, 개인정보·송금 **일절 거부**(+3~+10 항목당, 최대 +20)
+- 위험도 매핑: score ≥ 80 → "LOW", 50~79 → "MEDIUM", ≤ 49 → "HIGH"
+
+[출력 형식: JSON만]
 {{
-  "simulation_score": -10 | -5 | 10,
-  "reason": "최대 60자: 간단한 판단 근거"
+  "score": <정수 0~100>,
+  "risk_level": "LOW" | "MEDIUM" | "HIGH",
+  "pattern_summary": "전체 대응 패턴 요약(최대 180자, 사용자 관점)",
+  "good_signals": ["안전 신호 1", "안전 신호 2", "..."],
+  "risk_signals": ["위험 신호 1", "위험 신호 2", "..."],
+  "coaching": {{
+    "why_risky": "사용자 관점 설명(최대 180자): 현재 습관이 왜 취약한지",
+    "do_next_time": "다음 번 행동 지침 3~5단계(최대 200자, 명령형)",
+    "principles": ["원칙1", "원칙2", "원칙3"],
+    "better_answer_templates": {{
+      "personal_info_request": "개인정보 요구 상황 공손·단호 거절 템플릿 1~2문장",
+      "money_or_transfer": "송금/결제 요구 상황 거절·검증 유도 템플릿 1~2문장",
+      "app_or_link_install": "앱/링크/원격 제어 요구 차단 템플릿 1~2문장"
+    }}
+  }},
+  "overall_comment": "격려 + 핵심 개선 포인트(최대 150자)"
 }}
-"""
-        
+
+[추가 제약]
+- 질문별 세부 채점표를 만들지 말고, **총합 스코어 1개**만 제공.
+- 특정 기관·직원 정보나 개인식별정보를 **새로 만들거나 요구하지 말 것**.
+- 모든 텍스트는 **한국어**로 간결하고 실전형으로 작성.
+""".strip()
+
+        # LLM 호출 및 파싱
         try:
-            print(f"[DEBUG] 시뮬레이션 전용 Google GenAI 호출 시작...")
-            print(f"[DEBUG] 프롬프트 길이: {len(prompt)}")
-            print(f"[DEBUG] 프롬프트 미리보기: {prompt[:200]}...")
-            
-            # === 같은 로직 + 프롬프트만 다름 ===
-            result = self._call_simulation_llm(prompt)
-            
-            print(f"[DEBUG] 시뮬레이션 LLM 결과: {result}")
-            
-            # 시뮬 점수 추출
-            sim = int(result.get("simulation_score", 0))
-            print(f"[DEBUG] 추출된 simulation_score: {sim}")
-            
+            raw = self._generate_with_models(prompt)
+            llm = self._lenient_json_loads(self._extract_json(raw))  # ← LLM 전체 JSON
         except Exception as e:
-            print(f"[ERROR] 시뮬레이션 분석 실패: {str(e)}")
-            sim = -5
-            result = {"reason": "LLM 분석 실패로 기본값 적용"}
+            # 실패 시 기본 폴백 JSON
+            llm = {
+                "score": 50,
+                "risk_level": "MEDIUM",
+                "pattern_summary": "LLM 분석 실패로 임시 점수와 요약을 제공합니다.",
+                "good_signals": [],
+                "risk_signals": [],
+                "coaching": {
+                    "why_risky": "임시 설명",
+                    "do_next_time": "전화 끊기 → 공식 콜백 → 대면 확인",
+                    "principles": ["개인정보 미제공", "송금 금지", "공식 채널 확인"],
+                    "better_answer_templates": {
+                        "personal_info_request": "개인정보는 전화로 제공하지 않습니다. 공식 창구로 확인하겠습니다.",
+                        "money_or_transfer": "지금은 송금할 수 없습니다. 경찰서/은행에 직접 확인하겠습니다.",
+                        "app_or_link_install": "앱 설치나 링크 접속은 하지 않겠습니다. 공식 경로로만 확인합니다."
+                    }
+                },
+                "overall_comment": "임시 코멘트"
+            }
 
-        # 시뮬 점수→risk/score 매핑 (시뮬 '전용' 출력 구조 유지)
-        if sim == 10:
-            risk, score = "LOW", 10
-        elif sim == -10:
-            risk, score = "HIGH", -10
-        else:
-            risk, score = "MEDIUM", -5
+        # 위험도/점수 요약(상단 배지용)
+        score = int(llm.get("score", 0))
+        risk_level = (llm.get("risk_level") or "").upper() or ("LOW" if score >= 80 else "MEDIUM" if score >= 50 else "HIGH")
+        # 요약용 필드(기존 프론트 호환)
+        explanation = llm.get("coaching", {}).get("why_risky") or llm.get("overall_comment", "") or "분석 결과가 없습니다."
+        feedback = llm.get("coaching", {}).get("do_next_time") or "개선 지침을 확인할 수 없습니다."
 
+        # 응답: 요약 + LLM 원문(JSON) 같이 반환
         return {
-            "risk": risk,
-            "score": score,
-            "explanation": result.get("reason", "분석 결과가 없습니다."),
-            "feedback": self._generate_feedback(risk, score),
-            "simulation_score": sim,                     # ← 시뮬 '전용' 필드
-            "correct_answer": correct_answer,
-            "wrong_examples": wrong_examples,
+            "risk": risk_level,        # "LOW/MEDIUM/HIGH"
+            "score": score,            # 0~100
+            "explanation": explanation,
+            "feedback": feedback,
+            "llm": llm,                # ← 전체 LLM 출력
         }
-    
-    def _generate_feedback(self, risk_level: str, score: int) -> str:
-        """위험도에 따른 피드백 생성"""
-        if risk_level == "HIGH":
-            return "⚠️ 매우 위험한 대답입니다! 실제 보이스피싱에 속을 수 있습니다."
-        elif risk_level == "MEDIUM":
-            return "⚠️ 주의가 필요한 대답입니다. 더 신중하게 생각해보세요."
-        else:
-            return "✅ 좋은 대답입니다! 보이스피싱에 대응하는 올바른 방법입니다."
 
+# ===============================
 # API 라우터
-api_router = APIRouter(prefix="/api", tags=["simulation"])
+# ===============================
+api_router = APIRouter(prefix="/api/simulation", tags=["simulation"])
 
-# 웹 페이지 라우터
-web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
+class BulkAnalyzeRequest(BaseModel):
+    transcript: str
 
-# 시뮬레이션 전용 WebSocket 라우터
-websocket_router = APIRouter(prefix="/simulation", tags=["simulation-websocket"])
-
-# 시나리오 데이터 구조
-class Scenario(BaseModel):
-    id: int
-    title: str
-    description: str
-    rounds: List[Dict[str, Any]]
-
-class AnswerRequest(BaseModel):
-    scenario_id: int
-    question: str
-    answer: str
-
-class AnswerResponse(BaseModel):
+class AnalyzeResponse(BaseModel):
     risk: str
     score: int
     explanation: str
     feedback: str
-    correct_answer: str
-    wrong_examples: List[str]
+    llm: Dict[str, Any]   # ← LLM 전체 JSON 그대로 전달
 
-class ResultRequest(BaseModel):
-    user_id: str
-    scenario_id: int
-    risk: str
-    score: int
+@api_router.post("/analyze", response_model=AnalyzeResponse)
+async def analyze(request: BulkAnalyzeRequest):
+    transcript = (request.transcript or "").strip()
+    if not transcript:
+        raise HTTPException(status_code=400, detail="transcript가 비어있습니다.")
+    analyzer = SimulationAnalyzer()
+    result = analyzer.analyze_dialogue(transcript)
+    return AnalyzeResponse(**result)
 
-# 미리 정의된 보이스피싱 시나리오
-SCENARIOS = {
-    1: {
-        "id": 1,
-        "title": "검찰 사칭 시나리오",
-        "description": "검찰청을 사칭하여 개인정보를 요구하는 전형적인 보이스피싱",
-        "rounds": [
-            {
-                "round": 1,
-                "question": "여기는 검찰청입니다. 고객님 명의로 범죄 계좌가 발견됐습니다. 계좌번호를 알려주세요.",
-                "audio_url": "/static/audio/scene1_round1.mp3",
-                "correct_answer": "제가 직접 확인하겠습니다.",
-                "wrong_examples": ["네, 제 계좌는 1234-5678-9000입니다", "어떤 계좌인가요?"]
-            },
-            {
-                "round": 2,
-                "question": "안전을 위해 주민등록번호도 필요합니다. 지금 불러주세요.",
-                "audio_url": "/static/audio/scene1_round2.mp3",
-                "correct_answer": "주민번호는 알려드릴 수 없습니다.",
-                "wrong_examples": ["900101-1234567입니다", "왜 필요한가요?"]
-            },
-            {
-                "round": 3,
-                "question": "즉시 지정 계좌로 송금하지 않으면 체포됩니다.",
-                "audio_url": "/static/audio/scene1_round3.mp3",
-                "correct_answer": "그럴 리 없습니다. 직접 방문하겠습니다.",
-                "wrong_examples": ["송금하겠습니다.", "얼마나 보내야 하나요?"]
-            }
-        ]
-    },
-    2: {
-        "id": 2,
-        "title": "대출 사기 시나리오",
-        "description": "대출을 빙자하여 개인정보와 수수료를 요구하는 보이스피싱",
-        "rounds": [
-            {
-                "round": 1,
-                "question": "안녕하세요. 대출 심사팀입니다. 1억 대출이 승인되었습니다. 신분증 사본을 보내주세요.",
-                "audio_url": "/static/audio/scene2_round1.mp3",
-                "correct_answer": "어떤 은행인가요? 직접 방문하겠습니다.",
-                "wrong_examples": ["네, 신분증 보내드리겠습니다", "어떻게 보내나요?"]
-            },
-            {
-                "round": 2,
-                "question": "대출 수수료 50만원을 먼저 입금해주세요. 급합니다.",
-                "audio_url": "/static/audio/scene2_round2.mp3",
-                "correct_answer": "수수료는 대출 후에 차감하는 것이 맞습니다.",
-                "wrong_examples": ["네, 입금하겠습니다", "어느 계좌로 보내나요?"]
-            }
-        ]
-    },
-    3: {
-        "id": 3,
-        "title": "택배 사기 시나리오",
-        "description": "택배를 빙자하여 개인정보와 수수료를 요구하는 보이스피싱",
-        "rounds": [
-            {
-                "round": 1,
-                "question": "택배가 도착했습니다. 주소가 불분명해서 개인정보를 확인해야 합니다.",
-                "audio_url": "/static/audio/scene3_round1.mp3",
-                "correct_answer": "택배사에 직접 문의하겠습니다.",
-                "wrong_examples": ["네, 확인해드리겠습니다", "어떤 정보가 필요한가요?"]
-            },
-            {
-                "round": 2,
-                "question": "배송비 3만원을 추가로 지불해야 합니다. 카드번호를 알려주세요.",
-                "audio_url": "/static/audio/scene3_round2.mp3",
-                "correct_answer": "택배는 이미 결제가 완료되었습니다. 확인하겠습니다.",
-                "wrong_examples": ["네, 카드번호는 1234-5678-9000-1234입니다", "어떻게 결제하나요?"]
-            }
-        ]
-    }
-}
-
-# API 라우터
-@api_router.get("/scenarios")
-async def get_scenarios():
-    """사용 가능한 시나리오 목록 반환"""
-    scenarios = []
-    for scenario_id, scenario in SCENARIOS.items():
-        scenarios.append({
-            "id": scenario["id"],
-            "title": scenario["title"],
-            "description": scenario["description"]
-        })
-    return {"scenarios": scenarios}
-
-@api_router.get("/start/{scenario_id}")
-async def start_scenario(scenario_id: int):
-    """특정 시나리오 시작 - 첫 번째 라운드 정보 제공"""
-    if scenario_id not in SCENARIOS:
-        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-    
-    scenario = SCENARIOS[scenario_id]
-    first_round = scenario["rounds"][0]
-    
-    return {
-        "id": scenario_id,
-        "title": scenario["title"],
-        "current_round": 1,
-        "total_rounds": len(scenario["rounds"]),
-        "question": first_round["question"],
-        "audio_url": first_round["audio_url"]
-    }
-
-@api_router.get("/round/{scenario_id}/{round_number}")
-async def get_round(scenario_id: int, round_number: int):
-    """특정 라운드 정보 제공"""
-    if scenario_id not in SCENARIOS:
-        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-    
-    scenario = SCENARIOS[scenario_id]
-    if round_number < 1 or round_number > len(scenario["rounds"]):
-        raise HTTPException(status_code=404, detail="라운드를 찾을 수 없습니다")
-    
-    round_data = scenario["rounds"][round_number - 1]
-    
-    return {
-        "scenario_id": scenario_id,
-        "round": round_number,
-        "question": round_data["question"],
-        "audio_url": round_data["audio_url"]
-    }
-
-@api_router.post("/answer")
-async def evaluate_answer(request: AnswerRequest):
-    """사용자 답변 평가 - AI가 위험도 판별 + 점수 계산"""
+# === STT 업로드 엔드포인트 (녹음 → WAV 업로드) ===
+@api_router.post("/stt")
+async def stt(audio_file: UploadFile = File(...)):
     try:
-        print(f"[DEBUG] 답변 평가 시작: scenario_id={request.scenario_id}")
-        print(f"[DEBUG] 질문: {request.question}")
-        print(f"[DEBUG] 답변: {request.answer}")
-        
-        # 현재 시나리오와 라운드 정보 가져오기
-        if request.scenario_id not in SCENARIOS:
-            raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-        
-        scenario = SCENARIOS[request.scenario_id]
-        current_round = None
-        
-        # 현재 질문에 해당하는 라운드 찾기
-        for round_data in scenario["rounds"]:
-            if round_data["question"] == request.question:
-                current_round = round_data
-                break
-        
-        if not current_round:
-            raise HTTPException(status_code=404, detail="해당 질문의 라운드를 찾을 수 없습니다")
-        
-        print(f"[DEBUG] 현재 라운드: {current_round}")
-        
-        # 시뮬레이션 전용 AI 분석기 생성
-        analyzer = SimulationAnalyzer()
-        
-        # 시뮬레이션 분석 실행
-        result = analyzer.analyze_simulation_answer(
-            request.question, 
-            request.answer, 
-            current_round["correct_answer"], 
-            current_round["wrong_examples"]
+        # ADC(서비스계정) 준비
+        def _adc():
+            base_app = os.path.dirname(os.path.dirname(__file__))  # app/
+            proj_root = os.path.dirname(base_app)                  # 프로젝트 루트
+            key_candidates = [
+                os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "",
+                os.path.join(proj_root, "keys", "gcp-stt-key.json"),
+            ]
+            key_path = next((p for p in key_candidates if p and os.path.exists(p)), None)
+            if key_path and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
+                os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
+        _adc()
+
+        # 임시 저장
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            content = await audio_file.read()
+            tmp.write(content)
+            p = tmp.name
+
+        from google.cloud import speech
+        client = speech.SpeechClient()
+        with open(p, "rb") as f:
+            wav = f.read()
+
+        audio = speech.RecognitionAudio(content=wav)
+        cfg = speech.RecognitionConfig(
+            encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,
+            language_code="ko-KR",
+            enable_automatic_punctuation=True,
+            model="latest_short",
+            max_alternatives=1,
+            # sample_rate_hertz: WAV 헤더에서 자동 인식
         )
-        
-        print(f"[DEBUG] 시뮬레이션 분석 결과: {result}")
-        
-        # 시뮬레이션 점수에 따른 위험도 및 점수 계산
-        simulation_score = result.get("simulation_score", 0)
-        
-        if simulation_score == 10:
-            risk_level = "LOW"
-            score = 10
-        elif simulation_score == -5:
-            risk_level = "MEDIUM"
-            score = -5
-        elif simulation_score == -10:
-            risk_level = "HIGH"
-            score = -10
-        else:
-            # 기본값
-            risk_level = "MEDIUM"
-            score = -5
-        
-        # 피드백 생성
-        if risk_level == "HIGH":
-            feedback = "⚠️ 매우 위험한 대답입니다! 실제 보이스피싱에 속을 수 있습니다."
-        elif risk_level == "MEDIUM":
-            feedback = "⚠️ 주의가 필요한 대답입니다. 더 신중하게 생각해보세요."
-        else:
-            feedback = "✅ 좋은 대답입니다! 보이스피싱에 대응하는 올바른 방법입니다."
-        
-        return AnswerResponse(
-            risk=risk_level,
-            score=score,
-            explanation=result.get("explanation", "분석 결과가 없습니다."),
-            feedback=feedback,
-            correct_answer=result.get("correct_answer", ""),
-            wrong_examples=result.get("wrong_examples", [])
-        )
-        
+        resp = client.recognize(config=cfg, audio=audio)
+        text = ""
+        for r in resp.results:
+            if r.alternatives:
+                text += r.alternatives[0].transcript
+        return {"success": True, "transcript": text}
     except Exception as e:
-        print(f"[ERROR] 답변 평가 실패: {str(e)}")
-        import traceback
-        print(f"[ERROR] 상세 에러: {traceback.format_exc()}")
-        
-        # 에러 발생 시 기본 응답 반환
-        return AnswerResponse(
-            risk="ERROR",
-            score=0,
-            explanation=f"AI 분석 중 오류가 발생했습니다: {str(e)}",
-            feedback="⚠️ 시스템 오류가 발생했습니다. 다시 시도해주세요.",
-            correct_answer="",
-            wrong_examples=[]
-        )
-
-@api_router.post("/result")
-async def save_result(request: ResultRequest):
-    """시뮬레이션 결과 저장 (선택사항)"""
-    # 실제 구현에서는 데이터베이스에 저장
-    # 현재는 메모리에 임시 저장
-    return {
-        "status": "success",
-        "message": "결과가 저장되었습니다.",
-        "data": {
-            "user_id": request.user_id,
-            "scenario_id": request.scenario_id,
-            "risk": request.risk,
-            "score": request.score
-        }
-    }
-
-@api_router.get("/scenario/{scenario_id}")
-async def get_scenario_detail(scenario_id: int):
-    """시나리오 상세 정보 제공"""
-    if scenario_id not in SCENARIOS:
-        raise HTTPException(status_code=404, detail="시나리오를 찾을 수 없습니다")
-    
-    return SCENARIOS[scenario_id]
-
-# 시뮬레이션 전용 WebSocket 엔드포인트
-@websocket_router.websocket("/ws/stt")
-async def simulation_ws_stt(ws: WebSocket):
-    """시뮬레이션 전용 STT WebSocket - voice-guard STT 로직 사용"""
-    await ws.accept()
-    stt = None
-    
-    # GCP 자격증명 설정 (voice-guard와 동일)
-    def _setup_gcp_credentials():
-        import os
-        base_app = os.path.dirname(os.path.dirname(__file__))  # app/
-        proj_root = os.path.dirname(base_app)  # voice-guard/
-        
-        key_candidates = [
-            os.environ.get("GOOGLE_APPLICATION_CREDENTIALS") or "",
-            os.path.join(proj_root, "keys", "gcp-stt-key.json"),
-        ]
-        key_path = next((p for p in key_candidates if p and os.path.exists(p)), None)
-        if key_path and not os.environ.get("GOOGLE_APPLICATION_CREDENTIALS"):
-            os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
-            print(f"GCP 자격증명 설정: {key_path}")
-    
-    async def on_json(payload: dict):
-        """STT 결과를 WebSocket으로 전송 (시뮬레이션 전용)"""
-        try:
-            if payload.get("type") == "stt_update":
-                # 시뮬레이션 전용 메시지 형식으로 전송
-                await ws.send_json({
-                    "type": "stt_update",
-                    "transcript": payload.get("transcript", ""),
-                    "is_final": payload.get("is_final", False),
-                    "confidence": payload.get("confidence", 0.0)
-                })
-            elif payload.get("type") == "error":
-                print(f"STT 오류: {payload.get('message', 'Unknown error')}")
-                await ws.send_json({
-                    "type": "error",
-                    "message": payload.get("message", "Unknown error")
-                })
-        except Exception as e:
-            print(f"on_json 처리 오류: {e}")
-    
-    try:
-        _setup_gcp_credentials()
-        stt = GoogleStreamingSTT()
-        await stt.start(on_json)
-        print("시뮬레이션 STT 서비스 시작")
-        
-        while True:
-            try:
-                # WebSocket에서 오디오 데이터 수신
-                data = await ws.receive_bytes()
-                stt.feed_audio(data)
-            except WebSocketDisconnect:
-                print("[INFO] WebSocket 연결이 끊어졌습니다.")
-                break
-            except Exception as e:
-                # 텍스트 메시지 처리 (예: "__END__")
-                try:
-                    text_data = await ws.receive_text()
-                    if text_data == "__END__":
-                        print("[INFO] 시뮬레이션 STT 종료 신호 수신")
-                        break
-                    else:
-                        print(f"[INFO] 텍스트 메시지 수신: {text_data}")
-                except WebSocketDisconnect:
-                    print("[INFO] WebSocket 연결이 끊어졌습니다.")
-                    break
-                except Exception as text_e:
-                    print(f"WebSocket 데이터 수신 오류: {e}")
-                    break
-                
-    except WebSocketDisconnect:
-        print("시뮬레이션 WebSocket 연결 종료")
-    except Exception as e:
-        print(f"시뮬레이션 WebSocket 오류: {e}")
+        return {"success": False, "error": str(e)}
     finally:
-        if stt:
-            stt.close()
+        try:
+            if 'p' in locals() and os.path.exists(p):
+                os.unlink(p)
+        except Exception:
+            pass
 
-# 웹 페이지 라우터
+# ===============================
+# 초미니 HTML (하드코딩 Q1~Q3 + 발화 끝남 버튼)
+# ===============================
+web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
+
 @web_router.get("/", response_class=HTMLResponse)
 async def simulation_index():
-    """시뮬레이션 메인 페이지"""
     return HTMLResponse("""
-    <!DOCTYPE html>
-    <html lang="ko">
-    <head>
-        <meta charset="UTF-8">
-        <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>🎮 보이스피싱 시뮬레이션</title>
-        <style>
-            * { margin: 0; padding: 0; box-sizing: border-box; }
-            body { 
-                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; 
-                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                min-height: 100vh;
-                padding: 20px;
-            }
-            .container { 
-                max-width: 800px; 
-                margin: 0 auto; 
-                background: white; 
-                border-radius: 20px; 
-                box-shadow: 0 20px 40px rgba(0,0,0,0.1);
-                overflow: hidden;
-            }
-            .header { 
-                background: linear-gradient(135deg, #ff6b6b, #ee5a24); 
-                color: white; 
-                padding: 30px; 
-                text-align: center;
-            }
-            .header h1 { font-size: 2.5em; margin-bottom: 10px; }
-            .header p { font-size: 1.2em; opacity: 0.9; }
-            
-            .content { padding: 30px; }
-            
-            .scenario-select { 
-                background: #f8f9fa; 
-                padding: 20px; 
-                border-radius: 15px; 
-                margin-bottom: 30px;
-            }
-            .scenario-select h3 { margin-bottom: 15px; color: #333; }
-            select { 
-                width: 100%; 
-                padding: 15px; 
-                border: 2px solid #ddd; 
-                border-radius: 10px; 
-                font-size: 16px; 
-                margin-bottom: 15px;
-            }
-            .start-btn { 
-                background: linear-gradient(135deg, #4CAF50, #45a049); 
-                color: white; 
-                border: none; 
-                padding: 15px 30px; 
-                border-radius: 10px; 
-                font-size: 18px; 
-                cursor: pointer; 
-                width: 100%;
-                transition: transform 0.2s;
-            }
-            .start-btn:hover { transform: translateY(-2px); }
-            
-            .game-area { 
-                display: none; 
-                background: #f8f9fa; 
-                padding: 20px; 
-                border-radius: 15px;
-            }
-            .question-box { 
-                background: white; 
-                padding: 20px; 
-                border-radius: 10px; 
-                margin-bottom: 20px; 
-                border-left: 5px solid #007bff;
-            }
-            .audio-control { 
-                background: #007bff; 
-                color: white; 
-                border: none; 
-                padding: 10px 20px; 
-                border-radius: 8px; 
-                cursor: pointer; 
-                margin: 10px 0;
-            }
-            .answer-input { 
-                width: 100%; 
-                padding: 15px; 
-                border: 2px solid #ddd; 
-                border-radius: 10px; 
-                font-size: 16px; 
-                margin-bottom: 15px;
-            }
-            .submit-btn { 
-                background: linear-gradient(135deg, #007bff, #0056b3); 
-                color: white; 
-                border: none; 
-                padding: 15px 30px; 
-                border-radius: 10px; 
-                font-size: 16px; 
-                cursor: pointer; 
-                width: 100%;
-            }
-            
-            .result-area { 
-                display: none; 
-                background: white; 
-                padding: 20px; 
-                border-radius: 10px; 
-                margin-top: 20px;
-            }
-            .risk-high { border-left: 5px solid #dc3545; }
-            .risk-medium { border-left: 5px solid #ffc107; }
-            .risk-low { border-left: 5px solid #28a745; }
-            
-            .progress-bar { 
-                background: #e9ecef; 
-                height: 10px; 
-                border-radius: 5px; 
-                margin: 20px 0; 
-                overflow: hidden;
-            }
-            .progress-fill { 
-                height: 100%; 
-                background: linear-gradient(135deg, #4CAF50, #45a049); 
-                transition: width 0.3s ease;
-            }
-            
-            .hidden { display: none; }
-        </style>
-    </head>
-    <body>
-        <div class="container">
-            <div class="header">
-                <h1>🎮 보이스피싱 시뮬레이션</h1>
-                <p>AI와 함께 보이스피싱 대응 능력을 훈련하세요!</p>
-            </div>
-            
-            <div class="content">
-                <!-- 시나리오 선택 -->
-                <div class="scenario-select">
-                    <h3>📚 시나리오 선택하기</h3>
-                    <select id="scenarioSelect">
-                        <option value="">시나리오를 선택하세요</option>
-                    </select>
-                    <button class="start-btn" onclick="startScenario()">시작하기 ▶</button>
-                </div>
-                
-                <!-- 게임 진행 영역 -->
-                <div class="game-area" id="gameArea">
-                    <div class="progress-bar">
-                        <div class="progress-fill" id="progressFill"></div>
-                    </div>
-                    
-                    <div class="question-box">
-                        <h3>📞 질문</h3>
-                        <p id="questionText"></p>
-                        <button class="audio-control" onclick="playAudio()">🔊 음성 재생</button>
-                    </div>
-                    
-                    <div class="answer-input-area">
-                        <h3>💬 나의 대답</h3>
-                        
-                        <!-- WebSocket STT 영역 -->
-                        <div style="margin-bottom: 15px; padding: 15px; background: #f0f8ff; border-radius: 10px; border: 2px dashed #007bff;">
-                            <h4 style="color: #007bff; margin-bottom: 10px;">🎤 실시간 음성 인식</h4>
-                            <button id="wsConnectBtn" onclick="toggleWSConnection()" style="background: #007bff; color: white; border: none; padding: 10px 20px; border-radius: 8px; cursor: pointer; margin-right: 10px;">
-                                🔗 연결 시작
-                            </button>
-                            <span id="wsStatus" style="color: #666; font-size: 14px;">연결 대기 중</span>
-                            <div id="sttResult" style="margin-top: 10px; padding: 10px; background: #e8f5e8; border-radius: 5px; display: none;">
-                                <strong>인식 결과:</strong> <span id="sttText"></span>
-                                <div style="margin-top: 5px; font-size: 12px; color: #666;">
-                                    💡 음성을 인식하면 자동으로 답변 입력칸에 입력됩니다
-                                </div>
-                            </div>
-                        </div>
-                        
-                        <textarea class="answer-input" id="answerInput" placeholder="여기에 답변을 입력하세요..."></textarea>
-                        <button class="submit-btn" onclick="submitAnswer()">전송하기</button>
-                    </div>
-                </div>
-                
-                <!-- 결과 영역 -->
-                <div class="result-area" id="resultArea">
-                    <h3>📝 결과</h3>
-                    <div id="resultContent"></div>
-                    <button class="start-btn" onclick="nextRound()" style="margin-top: 20px;">다음 라운드</button>
-                </div>
-            </div>
-        </div>
-        
-        <script>
-            let currentScenario = null;
-            let currentRound = 1;
-            let totalRounds = 1;
-            let totalScore = 0;
-            
-            // WebSocket STT 관련 변수
-            let ws = null;
-            let mediaRecorder = null;
-            let isConnected = false;
-            let currentTranscript = "";
-            
-            // 페이지 로드 시 시나리오 목록 가져오기
-            window.onload = async function() {
-                // 상태 초기화
-                resetGameState();
-                
-                try {
-                    const response = await fetch('/api/scenarios');
-                    const data = await response.json();
-                    
-                    const select = document.getElementById('scenarioSelect');
-                    data.scenarios.forEach(scenario => {
-                        const option = document.createElement('option');
-                        option.value = scenario.id;
-                        option.textContent = scenario.title;
-                        select.appendChild(option);
-                    });
-                } catch (error) {
-                    console.error('시나리오 로드 실패:', error);
-                }
-            };
-            
-            // 페이지 새로고침 시 상태 초기화
-            window.addEventListener('beforeunload', function() {
-                resetGameState();
-                // WebSocket 연결 해제
-                if (ws) {
-                    ws.close();
-                }
-            });
-            
-            // 게임 상태 초기화
-            function resetGameState() {
-                currentScenario = null;
-                currentRound = 1;
-                totalRounds = 1;
-                totalScore = 0;
-                
-                // UI 초기화
-                document.getElementById('gameArea').style.display = 'none';
-                document.getElementById('resultArea').style.display = 'none';
-                document.getElementById('scenarioSelect').value = '';
-                document.getElementById('answerInput').value = '';
-                document.getElementById('progressFill').style.width = '0%';
-            }
-            
-            // 시나리오 시작
-            async function startScenario() {
-                const scenarioId = document.getElementById('scenarioSelect').value;
-                if (!scenarioId) {
-                    alert('시나리오를 선택해주세요.');
-                    return;
-                }
-                
-                try {
-                    const response = await fetch(`/api/start/${scenarioId}`);
-                    const data = await response.json();
-                    
-                    currentScenario = data;
-                    currentRound = 1;
-                    totalRounds = data.total_rounds;
-                    totalScore = 0;
-                    
-                    // 게임 영역 표시
-                    document.getElementById('gameArea').style.display = 'block';
-                    document.getElementById('resultArea').style.display = 'none';
-                    
-                    // 첫 번째 라운드 표시
-                    await loadRound(scenarioId, 1);
-                    
-                } catch (error) {
-                    console.error('시나리오 시작 실패:', error);
-                    alert('시나리오를 시작할 수 없습니다.');
-                }
-            }
-            
-            // 라운드 로드
-            async function loadRound(scenarioId, roundNumber) {
-                try {
-                    const response = await fetch(`/api/round/${scenarioId}/${roundNumber}`);
-                    const data = await response.json();
-                    
-                    document.getElementById('questionText').textContent = data.question;
-                    document.getElementById('progressFill').style.width = `${(roundNumber / totalRounds) * 100}%`;
-                    
-                } catch (error) {
-                    console.error('라운드 로드 실패:', error);
-                }
-            }
-            
-            // WebSocket STT 토글
-            async function toggleWSConnection() {
-                if (isConnected) {
-                    disconnectWS();
-                } else {
-                    await connectWS();
-                }
-            }
-            
-            // WebSocket 연결
-            async function connectWS() {
-                try {
-                    // 마이크 권한 요청
-                    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-                    
-                    // 시뮬레이션 전용 WebSocket 연결
-                    ws = new WebSocket('ws://127.0.0.1:8000/simulation/ws/stt');
-                    
-                    ws.onopen = function() {
-                        console.log('WebSocket 연결됨');
-                        isConnected = true;
-                        document.getElementById('wsConnectBtn').textContent = '🔌 연결 해제';
-                        document.getElementById('wsConnectBtn').style.background = '#dc3545';
-                        document.getElementById('wsStatus').textContent = '연결됨 - 음성 인식 중...';
-                        document.getElementById('sttResult').style.display = 'block';
-                        
-                        // 오디오 스트림 시작
-                        startAudioStream(stream);
-                    };
-                    
-                    ws.onmessage = function(event) {
-                        try {
-                            const data = JSON.parse(event.data);
-                            console.log('STT 메시지:', data);
-                            
-                            if (data.type === 'stt_update') {
-                                currentTranscript = data.transcript;
-                                document.getElementById('sttText').textContent = data.transcript;
-                                
-                                // 실시간으로 답변 입력칸에 업데이트
-                                document.getElementById('answerInput').value = data.transcript;
-                                
-                                // 최종 결과면 강조 표시
-                                if (data.is_final) {
-                                    document.getElementById('answerInput').style.borderColor = '#28a745';
-                                    document.getElementById('answerInput').style.backgroundColor = '#f8fff8';
-                                    console.log('STT 최종 결과:', data.transcript);
-                                } else {
-                                    document.getElementById('answerInput').style.borderColor = '#007bff';
-                                    document.getElementById('answerInput').style.backgroundColor = '#f8fbff';
-                                }
-                            }
-                        } catch (error) {
-                            console.error('STT 메시지 파싱 오류:', error);
-                        }
-                    };
-                    
-                    ws.onclose = function() {
-                        console.log('WebSocket 연결 종료');
-                        isConnected = false;
-                        document.getElementById('wsConnectBtn').textContent = '🔗 연결 시작';
-                        document.getElementById('wsConnectBtn').style.background = '#007bff';
-                        document.getElementById('wsStatus').textContent = '연결 대기 중';
-                        document.getElementById('sttResult').style.display = 'none';
-                        
-                        // 입력칸 스타일 초기화
-                        document.getElementById('answerInput').style.borderColor = '#ddd';
-                        document.getElementById('answerInput').style.backgroundColor = 'white';
-                        
-                        // 스트림 정리
-                        stream.getTracks().forEach(track => track.stop());
-                    };
-                    
-                    ws.onerror = function(error) {
-                        console.error('WebSocket 오류:', error);
-                        alert('WebSocket 연결 오류가 발생했습니다.');
-                    };
-                    
-                } catch (error) {
-                    console.error('WebSocket 연결 실패:', error);
-                    alert('마이크 접근 권한이 필요합니다.');
-                }
-            }
-            
-            // WebSocket 연결 해제
-            function disconnectWS() {
-                try {
-                    if (ws && ws.readyState === WebSocket.OPEN) {
-                        ws.send("__END__");
-                    }
-                } catch (e) { }
-                
-                try {
-                    if (ws) {
-                        ws.close();
-                        ws = null;
-                    }
-                } catch (e) { }
-                
-                console.log('WebSocket 연결 해제됨');
-            }
-            
-            // 오디오 스트림 시작 (voice-guard와 동일한 방식)
-            async function startAudioStream(stream) {
-                const audioCtx = new AudioContext({ sampleRate: 48000 });
-                
-                // AudioWorklet 모듈 등록
-                await audioCtx.audioWorklet.addModule(URL.createObjectURL(new Blob([`
-                    class Pcm16Worklet extends AudioWorkletProcessor {
-                        constructor() { 
-                            super(); 
-                            this.buf = []; 
-                            this.ratio = sampleRate / 16000; 
-                            this.phase = 0; 
-                        }
-                        process(inputs) {
-                            if (!inputs.length || !inputs[0].length) return true;
-                            const ch = inputs[0][0];
-                            for (let i = 0; i < ch.length; i++) {
-                                this.phase += 1;
-                                if (this.phase >= this.ratio) {
-                                    this.phase -= this.ratio;
-                                    this.buf.push(ch[i]);
-                                }
-                            }
-                            if (this.buf.length >= 2560) {
-                                const pcm = new Int16Array(this.buf.length);
-                                for (let i = 0; i < this.buf.length; i++) {
-                                    let s = Math.max(-1, Math.min(1, this.buf[i]));
-                                    pcm[i] = s < 0 ? s * 0x8000 : s * 0x7FFF;
-                                }
-                                this.port.postMessage(pcm.buffer, [pcm.buffer]);
-                                this.buf = [];
-                            }
-                            return true;
-                        }
-                    }
-                    registerProcessor('pcm16-worklet', Pcm16Worklet);
-                `], { type: "text/javascript" })));
-                
-                const src = audioCtx.createMediaStreamSource(stream);
-                const workletNode = new AudioWorkletNode(audioCtx, 'pcm16-worklet');
-                
-                workletNode.port.onmessage = (e) => {
-                    if (isConnected && ws && ws.readyState === WebSocket.OPEN) {
-                        try {
-                            ws.send(e.data);
-                        } catch (error) {
-                            console.error('WebSocket 전송 오류:', error);
-                        }
-                    }
-                };
-                
-                src.connect(workletNode);
-                // 에코 방지: 스피커 출력 연결하지 않음
-                // workletNode.connect(audioCtx.destination);
-                
-                console.log('오디오 스트림 시작됨 (AudioWorklet 방식)');
-            }
-            
-            // 음성 재생 (실제 구현에서는 audio_url 사용)
-            function playAudio() {
-                alert('음성 재생 기능은 실제 오디오 파일이 필요합니다.');
-            }
-            
-            // 답변 제출
-            async function submitAnswer() {
-                const answer = document.getElementById('answerInput').value.trim();
-                if (!answer) {
-                    alert('답변을 입력해주세요.');
-                    return;
-                }
-                
-                try {
-                    console.log('답변 제출 시작:', {
-                        scenario_id: currentScenario.id,
-                        question: document.getElementById('questionText').textContent,
-                        answer: answer
-                    });
-                    
-                    const response = await fetch('/api/answer', {
-                        method: 'POST',
-                        headers: {
-                            'Content-Type': 'application/json',
-                        },
-                        body: JSON.stringify({
-                            scenario_id: currentScenario.id,
-                            question: document.getElementById('questionText').textContent,
-                            answer: answer
-                        })
-                    });
-                    
-                    console.log('API 응답 상태:', response.status);
-                    
-                    if (!response.ok) {
-                        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
-                    }
-                    
-                    const result = await response.json();
-                    console.log('API 응답 데이터:', result);
-                    
-                    // 결과 표시
-                    displayResult(result);
-                    
-                    // 점수 누적 (에러가 아닌 경우에만)
-                    if (result.risk !== 'ERROR') {
-                        totalScore += result.score;
-                    }
-                    
-                } catch (error) {
-                    console.error('답변 평가 실패:', error);
-                    
-                    // 에러 발생 시 기본 결과 표시
-                    const errorResult = {
-                        risk: 'ERROR',
-                        score: 0,
-                        explanation: `API 호출 실패: ${error.message}`,
-                        feedback: '⚠️ 시스템 오류가 발생했습니다. 다시 시도해주세요.'
-                    };
-                    
-                    displayResult(errorResult);
-                }
-            }
-            
-            // 결과 표시
-            function displayResult(result) {
-                const resultArea = document.getElementById('resultArea');
-                const resultContent = document.getElementById('resultContent');
-                
-                console.log('결과 데이터:', result); // 디버깅용
-                
-                // 응답 데이터 검증 및 기본값 설정
-                const risk = result.risk || 'UNKNOWN';
-                const score = result.score !== undefined ? result.score : 0;
-                const explanation = result.explanation || '설명이 없습니다.';
-                const feedback = result.feedback || '피드백이 없습니다.';
-                const correctAnswer = result.correct_answer || '올바른 답변이 없습니다.';
-                const wrongExamples = result.wrong_examples || [];
-                const userAnswer = document.getElementById('answerInput').value.trim();
-                
-                let riskClass = '';
-                if (risk === 'HIGH') riskClass = 'risk-high';
-                else if (risk === 'MEDIUM') riskClass = 'risk-medium';
-                else if (risk === 'LOW') riskClass = 'risk-low';
-                else if (risk === 'ERROR') riskClass = 'risk-high'; // 에러 시 빨간색
-                else riskClass = 'risk-medium'; // 기본값
-                
-                // 잘못된 예시들을 HTML로 변환
-                const wrongExamplesHtml = wrongExamples.map(example => `<li>${example}</li>`).join('');
-                
-                resultContent.innerHTML = `
-                    <div class="${riskClass}">
-                        <h4>📊 분석 결과</h4>
-                        
-                        <div style="margin-bottom: 20px; padding: 15px; background: #e3f2fd; border-radius: 8px; border-left: 5px solid #2196f3;">
-                            <h5 style="color: #1976d2; margin-bottom: 10px;">💬 당신의 답변</h5>
-                            <p style="font-size: 18px; font-weight: bold; color: #333;">"${userAnswer}"</p>
-                        </div>
-                        
-                        <div style="margin-bottom: 20px; padding: 15px; background: #f8f9fa; border-radius: 8px;">
-                            <h5 style="color: #333; margin-bottom: 10px;">🎯 위험도 평가</h5>
-                            <p><strong>위험도:</strong> <span style="color: ${risk === 'HIGH' ? '#dc3545' : risk === 'MEDIUM' ? '#ffc107' : '#28a745'}; font-weight: bold;">${risk}</span></p>
-                            <p><strong>점수:</strong> <span style="color: ${score > 0 ? '#28a745' : '#dc3545'}; font-weight: bold;">${score > 0 ? '+' : ''}${score}점</span></p>
-                            <p><strong>총점:</strong> <span style="color: #333; font-weight: bold;">${totalScore}점</span></p>
-                        </div>
-                        
-                        <div style="margin-bottom: 20px; padding: 15px; background: #fff3e0; border-radius: 8px; border-left: 5px solid #ff9800;">
-                            <h5 style="color: #e65100; margin-bottom: 10px;">❓ 왜 이렇게 평가되었나요?</h5>
-                            <p style="color: #333; line-height: 1.6;">${explanation}</p>
-                        </div>
-                        
-                        <div style="margin-bottom: 20px; padding: 15px; background: #e8f5e8; border-radius: 8px; border-left: 5px solid #4caf50;">
-                            <h5 style="color: #2e7d32; margin-bottom: 10px;">✅ 올바른 답변 예시</h5>
-                            <p style="color: #2e7d32; font-weight: bold; font-size: 16px;">"${correctAnswer}"</p>
-                        </div>
-                        
-                        <div style="margin-bottom: 20px; padding: 15px; background: #ffebee; border-radius: 8px; border-left: 5px solid #f44336;">
-                            <h5 style="color: #c62828; margin-bottom: 10px;">❌ 하면 안 되는 답변 예시</h5>
-                            <ul style="color: #c62828; margin-left: 20px; line-height: 1.6;">
-                                ${wrongExamplesHtml}
-                            </ul>
-                        </div>
-                        
-                        <div style="margin-top: 20px; padding: 15px; background: #f3e5f5; border-radius: 8px; border-left: 5px solid #9c27b0;">
-                            <h5 style="color: #6a1b9a; margin-bottom: 10px;">💡 피드백</h5>
-                            <p style="color: #6a1b9a; font-weight: bold; font-size: 16px;">${feedback}</p>
-                        </div>
-                    </div>
-                `;
-                
-                resultArea.style.display = 'block';
-                document.getElementById('gameArea').style.display = 'none';
-            }
-            
-            // 다음 라운드
-            async function nextRound() {
-                currentRound++;
-                
-                if (currentRound > totalRounds) {
-                    // 시나리오 완료
-                    alert(`시나리오 완료! 최종 점수: ${totalScore}점`);
-                    document.getElementById('gameArea').style.display = 'none';
-                    document.getElementById('resultArea').style.display = 'none';
-                    document.getElementById('scenarioSelect').value = '';
-                    return;
-                }
-                
-                // 다음 라운드 로드
-                await loadRound(currentScenario.id, currentRound);
-                
-                // 입력 필드 초기화
-                document.getElementById('answerInput').value = '';
-                
-                // 게임 영역 표시
-                document.getElementById('gameArea').style.display = 'block';
-                document.getElementById('resultArea').style.display = 'none';
-            }
-        </script>
-    </body>
-    </html>
-    """)
+<!doctype html><meta charset="utf-8"><title>보이스피싱 시뮬(하드코딩)</title>
+<style>
+body{font:14px system-ui,Segoe UI,Arial;margin:24px}
+button{padding:8px 12px;margin:6px 6px 0 0}
+textarea{width:100%;height:220px;margin-top:8px}
+pre{background:#f6f7f9;padding:10px;border-radius:8px;white-space:pre-wrap;margin-top:8px}
+.small{color:#666}
+code{background:#eef;padding:2px 4px;border-radius:4px}
+</style>
+<h3>Q1/Q2/Q3 하드코딩 · 발화 끝남 → STT → A1/A2/A3 자동 기록</h3>
+<div class="small">※ Q버튼을 누르면 해당 질문 텍스트가 추가되고, 즉시 녹음을 시작합니다(침묵 1초 후 자동 종료).</div>
+<div>
+  <button onclick="onQ(1)">Q1 발화 끝남</button>
+  <button onclick="onQ(2)">Q2 발화 끝남</button>
+  <button onclick="onQ(3)">Q3 발화 끝남</button>
+  <button onclick="analyze()">분석하기</button>
+</div>
+<textarea id="tx" placeholder="Q1/A1, Q2/A2, Q3/A3 순으로 누적됩니다."></textarea>
+<pre id="out" style="display:none"></pre>
+<script>
+const Q = {
+  1: "여기는 검찰청입니다. 고객님 명의로 범죄 계좌가 발견됐습니다. 계좌번호를 알려주세요.",
+  2: "안전을 위해 주민등록번호도 필요합니다. 지금 불러주세요.",
+  3: "즉시 지정 계좌로 송금하지 않으면 체포됩니다."
+};
 
-# 메인 라우터 (API + 웹 페이지 + WebSocket)
+let isRecording=false, mediaRecorder=null, chunks=[], ac=null, analyser=null, mic=null, dataArr=null, silenceTimer=null, hardTimeout=null;
+
+function appendLine(line){
+  const t = document.getElementById('tx');
+  const nl = t.value && !t.value.endsWith("\\n");
+  t.value += (nl?"\\n":"") + line + "\\n";
+}
+
+async function onQ(n){
+  if(isRecording){ show('이미 녹음 중입니다. 잠시만…'); return; }
+  appendLine(`Q${n}: ${Q[n]}`);
+  await startRecording(n);
+}
+
+function show(txt){
+  const out = document.getElementById('out');
+  out.style.display='block';
+  out.textContent = txt;
+}
+
+async function startRecording(turn){
+  try{
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio:{sampleRate:16000, channelCount:1, echoCancellation:true, noiseSuppression:true}
+    });
+    ac = new AudioContext();
+    analyser = ac.createAnalyser();
+    mic = ac.createMediaStreamSource(stream);
+    mic.connect(analyser);
+    analyser.fftSize = 256;
+    dataArr = new Uint8Array(analyser.frequencyBinCount);
+
+    mediaRecorder = new MediaRecorder(stream, {mimeType:'audio/webm;codecs=opus'});
+    chunks = [];
+    mediaRecorder.ondataavailable = e => chunks.push(e.data);
+    mediaRecorder.onstop = async () => {
+      try{
+        stream.getTracks().forEach(t=>t.stop());
+        const webm = new Blob(chunks, {type:'audio/webm'});
+        const wav = await toWavResampled(webm, 16000);
+        await doSTT(wav, turn);
+      }catch(e){
+        appendLine(`A${turn}: (STT 실패: ${e})`);
+        show('STT 실패: '+e);
+      }finally{
+        cleanup(); isRecording = false;
+      }
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    show(`Q${turn} 녹음 시작… (침묵 1초 시 자동 종료)`);
+
+    // 최대 50초 제한
+    hardTimeout = setTimeout(() => {
+      if(isRecording) { show('최대 녹음 시간(50초) 도달, 자동 종료'); stopRecording(); }
+    }, 50000);
+
+    detectSilence(()=>stopRecording(), 1000, 30);
+  }catch(e){
+    show('마이크 권한 필요/오류: '+e);
+  }
+}
+
+function stopRecording(){
+  if(mediaRecorder && isRecording){
+    mediaRecorder.stop(); isRecording=false; show('녹음 종료. STT 중…');
+  }
+  if(silenceTimer){ clearTimeout(silenceTimer); silenceTimer=null; }
+  if(hardTimeout){ clearTimeout(hardTimeout); hardTimeout=null; }
+}
+
+function cleanup(){
+  try{ if(ac){ ac.close(); } }catch(e){}
+  ac=null; analyser=null; mic=null; dataArr=null;
+}
+
+function detectSilence(onSilence, timeoutMs, threshold){
+  let quietSince = null;
+  const loop = ()=>{
+    if(!analyser || !isRecording) return;
+    analyser.getByteFrequencyData(dataArr);
+    let sum=0; for(let i=0;i<dataArr.length;i++) sum+=dataArr[i];
+    const avg = sum/(dataArr.length||1);
+    const now = performance.now();
+    if(avg <= threshold){
+      if(quietSince === null) quietSince = now;
+      const quietFor = now - quietSince;
+      if(!silenceTimer){
+        silenceTimer = setTimeout(()=>{ onSilence(); }, Math.max(0, timeoutMs - quietFor));
+      }
+    }else{
+      quietSince = null;
+      if(silenceTimer){ clearTimeout(silenceTimer); silenceTimer=null; }
+    }
+    if(isRecording) requestAnimationFrame(loop);
+  };
+  loop();
+}
+
+async function toWavResampled(webmBlob, targetRate){
+  const arr = await webmBlob.arrayBuffer();
+  const ac2 = new (window.AudioContext||window.webkitAudioContext)();
+  const srcBuffer = await ac2.decodeAudioData(arr);
+  const frames = Math.ceil(srcBuffer.duration * targetRate);
+  const off = new OfflineAudioContext(1, frames, targetRate);
+  const src = off.createBufferSource();
+  src.buffer = srcBuffer;
+  src.connect(off.destination);
+  src.start(0);
+  const rendered = await off.startRendering();
+  ac2.close();
+  return new Blob([bufferToWav(rendered)], {type:'audio/wav'});
+}
+
+function bufferToWav(buffer){
+  const ch = 1, len = buffer.length, rate = buffer.sampleRate;
+  const ab = new ArrayBuffer(44 + len*ch*2);
+  const v = new DataView(ab);
+  const w = (o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
+  w(0,'RIFF'); v.setUint32(4,36+len*ch*2,true); w(8,'WAVE'); w(12,'fmt ');
+  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,ch,true);
+  v.setUint32(24,rate,true); v.setUint32(28,rate*ch*2,true); v.setUint16(32,ch*2,true);
+  v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,len*ch*2,true);
+  let off=44, data = buffer.getChannelData(0);
+  for(let i=0;i<len;i++){
+    let s = Math.max(-1,Math.min(1,data[i]));
+    v.setInt16(off, s<0 ? s*0x8000 : s*0x7FFF, true);
+    off+=2;
+  }
+  return ab;
+}
+
+async function doSTT(wavBlob, turn){
+  const fd = new FormData(); fd.append('audio_file', wavBlob, `a${turn}.wav`);
+  const res = await fetch('/api/simulation/stt', {method:'POST', body:fd});
+  let line;
+  try{
+    const data = await res.json();
+    if(!data.success){
+      line = `A${turn}: (STT 실패: ${data.error||'unknown'})`;
+      show('STT 실패: '+(data.error||'unknown'));
+    }else{
+      const tx = (data.transcript||'').trim();
+      line = `A${turn}: ${tx||'(빈 텍스트)'}`;
+      show(`A${turn} STT 완료`);
+    }
+  }catch(e){
+    line = `A${turn}: (STT 응답 파싱 실패: ${e})`;
+    show('STT 응답 파싱 실패: '+e);
+  }
+  appendLine(line);
+}
+
+async function analyze(){
+  const t = document.getElementById('tx').value.trim();
+  if(!t){ alert('대화 텍스트가 없습니다.'); return; }
+  show('분석 중…');
+  const res = await fetch('/api/simulation/analyze',{
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({transcript:t})
+  });
+  const data = await res.json();
+  if(!res.ok){ show('에러: '+(data.detail||res.statusText)); return; }
+
+  // 상단 요약 + LLM 전체 JSON 같이 보여주기
+  const pretty = JSON.stringify(data.llm, null, 2);
+  show(
+`위험도: ${data.risk}
+점수: ${data.score}
+
+[요약 설명]
+- 왜 위험한가: ${data.explanation}
+- 다음에 이렇게 하자: ${data.feedback}
+
+[LLM 전체 JSON 원문]
+${pretty}`
+  );
+}
+</script>
+""")
+
+# 메인 라우터
 router = APIRouter()
 router.include_router(api_router)
 router.include_router(web_router)
-router.include_router(websocket_router)
