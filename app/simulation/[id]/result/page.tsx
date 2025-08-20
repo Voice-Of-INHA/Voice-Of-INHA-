@@ -164,7 +164,7 @@ export default function SimulationResultPage() {
 
   useEffect(() => {
     loadResult()
-  }, [scenarioId, sessionId])
+  }, [scenarioId, sessionId, loadResult])
 
   if (loading) {
     return (

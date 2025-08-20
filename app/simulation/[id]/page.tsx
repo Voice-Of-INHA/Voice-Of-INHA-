@@ -573,7 +573,7 @@ export default function SimulationPage() {
       console.log("오디오 자동재생 실패, 리스닝으로 바로 진행");
       startListening();
     }
-  }, [scenario, currentRound, analyzeAllResponses, startListening]);
+  }, [scenario, currentRound, analyzeAllResponses, startListening, createWavBuffer]);
 
   // 오디오 시스템 초기화
   const initializeAudio = useCallback(async () => {

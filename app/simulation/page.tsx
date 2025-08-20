@@ -81,7 +81,7 @@ export default function SimulationPage() {
   // 컴포넌트 마운트시 백엔드 상태 확인
   useEffect(() => {
     checkBackendHealth()
-  }, [])
+  }, [checkBackendHealth])
 
   return (
     <div className="min-h-screen relative overflow-hidden bg-black">

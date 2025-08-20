@@ -363,41 +363,7 @@ export default function AnalysisPage() {
     }
   }
 
-  const resetRecording = () => {
-    setAudioUrl(undefined)
-    setRecordingBlob(null)
-    setUploadSuccess(false)
-    setError(null)
-    setIsPlaying(false)
-    setFileUrl(null)
-    setRecordingSeconds(0)
-    
-    // 분석 상태도 초기화
-    setSttLog('')
-    setAnalysisLog('')
-    setCurrentPartialText('')
-    setAnalysisResult({
-      risk: null,
-      riskScore: 0,
-      keywords: [],
-      reason: '',
-      fraudType: undefined,
-      timestamp: 0
-    })
 
-    // 위험도 경고 상태 초기화
-    setShowRiskAlert(false)
-    setHasShownRiskAlert(false)
-
-    if (audioRef.current) {
-      audioRef.current.pause()
-      audioRef.current.currentTime = 0
-    }
-    if (timerRef.current) {
-      clearInterval(timerRef.current)
-      timerRef.current = null
-    }
-  }
 
   
   // 모달 관련 상태
@@ -1009,7 +975,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     }
 
     // 2. 백엔드 서버 상태 확인
-    const isBackendHealthy = await checkBackendHealth()
+    await checkBackendHealth()
     
     // 3. WebSocket 지원 확인
     if (typeof WebSocket === 'undefined') {
@@ -1106,10 +1072,10 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         // WebSocket 연결 가능 - 정상 모드
         console.log("🚀 WebSocket 모드로 시작")
         await initializeWebSocket()
-        const stream = await initializeAudioStream()
+        const audioStream = await initializeAudioStream()
         
         // MP3 녹음 시작
-        const mediaRecorder = new MediaRecorder(stream)
+        const mediaRecorder = new MediaRecorder(audioStream)
         mediaRecorderRef.current = mediaRecorder
         audioChunksRef.current = []
 
@@ -1140,8 +1106,8 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         await startHttpPollingMode()
         
         // MP3 녹음 시작
-        const stream = await initializeAudioStream()
-        const mediaRecorder = new MediaRecorder(stream)
+        const audioStream = await initializeAudioStream()
+        const mediaRecorder = new MediaRecorder(audioStream)
         mediaRecorderRef.current = mediaRecorder
         audioChunksRef.current = []
 

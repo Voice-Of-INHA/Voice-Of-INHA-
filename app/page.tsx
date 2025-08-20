@@ -3,7 +3,7 @@ import { useState, useEffect } from 'react'
 
 export default function Home() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking')
-  const [apiResponse, setApiResponse] = useState<{ status?: string; service?: string; error?: string } | null>(null)
+
 
   // 백엔드 헬스 체크 함수
   const checkBackendHealth = async () => {
@@ -15,16 +15,13 @@ export default function Home() {
       if (response.ok) {
         const data = await response.json()
         console.log('백엔드 상태:', data)
-        setApiResponse(data)
         setBackendStatus('online')
       } else {
         console.error('백엔드 응답 실패:', response.status, response.statusText)
-        setApiResponse({ error: `HTTP ${response.status}: ${response.statusText}` })
         setBackendStatus('offline')
       }
     } catch (error) {
       console.error('백엔드 헬스 체크 실패:', error)
-      setApiResponse({ error: error instanceof Error ? error.message : '알 수 없는 오류가 발생했습니다' })
       setBackendStatus('offline')
     }
   }

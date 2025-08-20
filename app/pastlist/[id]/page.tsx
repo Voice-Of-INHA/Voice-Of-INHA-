@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import { useParams, useRouter } from "next/navigation"
 
 // 새로운 API 응답 데이터 타입 정의
@@ -57,13 +57,8 @@ export default function AnalysisDetailPage() {
   const [isLoading, setIsLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
 
-  useEffect(() => {
-    if (id) {
-      loadAnalysisData()
-    }
-  }, [id])
-
-  const loadAnalysisData = async () => {
+  // useCallback에서 의존성 배열에서 자기 자신을 제거
+  const loadAnalysisData = useCallback(async () => {
     setIsLoading(true)
     setError(null)
 
@@ -95,7 +90,13 @@ export default function AnalysisDetailPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [id]) // id만 의존성 배열에 포함
+
+  useEffect(() => {
+    if (id) {
+      loadAnalysisData()
+    }
+  }, [id, loadAnalysisData]) // 이제 loadAnalysisData가 정상적으로 참조됩니다
 
   const formatDate = (dateString: string): string => {
     try {
@@ -287,7 +288,7 @@ export default function AnalysisDetailPage() {
                       </span>
                       {flag.name}
                     </h3>
-                    <p className="text-gray-300 mb-2 font-medium">"{flag.quote}"</p>
+                    <p className="text-gray-300 mb-2 font-medium">&ldquo;{flag.quote}&rdquo;</p>
                     <p className="text-gray-400 text-sm leading-relaxed">{flag.explanation}</p>
                   </div>
                 </div>
@@ -336,7 +337,7 @@ export default function AnalysisDetailPage() {
                     </span>
                     {event.event}
                   </h4>
-                  <p className="text-gray-300 text-sm italic">"{event.quote}"</p>
+                  <p className="text-gray-300 text-sm italic">&ldquo;{event.quote}&rdquo;</p>
                 </div>
               </div>
             ))}

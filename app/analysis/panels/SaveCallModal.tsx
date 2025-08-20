@@ -24,7 +24,6 @@ export default function SaveCallModal({
   phoneNumber,
   isSaving,
   recordingBlob,
-  recordingSeconds,
   onPhoneNumberChange,
   onSave,
   onSkip
