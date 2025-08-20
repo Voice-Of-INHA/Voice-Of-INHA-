@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
+from .models.scenario import Scenario
 
 from .config import settings
 from .models import scenario
