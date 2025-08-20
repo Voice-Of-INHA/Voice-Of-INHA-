@@ -137,7 +137,7 @@ def _call_llm_final_report(full_text: str) -> Dict[str, Any]:
     resp = client.models.generate_content(
         model="gemini-2.5-pro",
         contents=txt,
-        config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=4096),
+        config=types.GenerateContentConfig(temperature=0.0, max_output_tokens=8192),
     )
     raw = (getattr(resp, "text", "") or "").strip()
     if raw.startswith("```"):
