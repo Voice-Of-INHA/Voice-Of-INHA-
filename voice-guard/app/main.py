@@ -6,8 +6,9 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import HTMLResponse
 
 from .config import settings
+from .models import scenario
 from .db import Base, engine
-from .routers import call_logs, uploads, realtime, voice_guard
+from .routers import call_logs, uploads, realtime, voice_guard, scenarios
 
 # cloudtype
 if "GCP_KEY_BASE64" in os.environ:
@@ -42,6 +43,8 @@ app.include_router(realtime.router)
 
 # voice-guard 시스템 (별도 경로로 연결)
 app.include_router(voice_guard.router)
+
+app.include_router(scenarios.router)
 
 @app.get("/")
 def index():
