@@ -4,7 +4,6 @@ import { useState, useEffect } from 'react'
 export default function Home() {
   const [backendStatus, setBackendStatus] = useState<'checking' | 'online' | 'offline'>('checking')
   const [apiResponse, setApiResponse] = useState<{ status?: string; service?: string; error?: string } | null>(null)
-  const [showResponse, setShowResponse] = useState(false)
 
   // 백엔드 헬스 체크 함수
   const checkBackendHealth = async () => {
@@ -101,39 +100,19 @@ export default function Home() {
             과거 이력 조회
           </button>
 
-          {/* 백엔드 상태 새로고침 버튼 */}
+          {/* 시뮬레이션 게임 버튼 */}
           <button 
-            onClick={checkBackendHealth}
-            className="mt-4 px-4 py-2 bg-blue-900 hover:bg-blue-800 text-blue-300 text-sm rounded-lg border border-blue-600 transform hover:scale-105 transition-all duration-200"
+            onClick={() => window.location.href = '/simulation'}
+            disabled={backendStatus !== 'online'}
+            className={`w-full py-4 px-8 font-bold text-lg rounded-2xl shadow-lg transform transition-all duration-200 backdrop-blur-sm border ${
+              backendStatus === 'online'
+                ? 'bg-gray-900 hover:bg-gray-800 text-white border-gray-600 hover:scale-105'
+                : 'bg-gray-800 text-gray-400 border-gray-500 cursor-not-allowed opacity-50'
+            }`}
           >
-            🔄 연결 상태 새로고침
+            시뮬레이션 게임
           </button>
-
-          {/* API 응답 보기/숨기기 버튼 */}
-          {apiResponse && (
-            <button 
-              onClick={() => setShowResponse(!showResponse)}
-              className="mt-2 px-4 py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 text-sm rounded-lg border border-gray-500 transform hover:scale-105 transition-all duration-200"
-            >
-              {showResponse ? '📄 응답 숨기기' : '📄 API 응답 보기'}
-            </button>
-          )}
         </div>
-
-        {/* API 응답 표시 섹션 */}
-        {showResponse && apiResponse && (
-          <div className="mt-8 w-full max-w-2xl">
-            <div className="bg-gray-900 border border-gray-600 rounded-lg p-4">
-              <h3 className="text-white font-semibold mb-3 flex items-center gap-2">
-                <span>🔗</span>
-                API 응답 데이터
-              </h3>
-              <pre className="bg-black text-green-400 text-sm p-3 rounded border overflow-x-auto">
-                {JSON.stringify(apiResponse, null, 2)}
-              </pre>
-            </div>
-          </div>
-        )}
 
         {/* 추가 정보 */}
         <div className="mt-16 text-gray-400 text-sm opacity-80">
