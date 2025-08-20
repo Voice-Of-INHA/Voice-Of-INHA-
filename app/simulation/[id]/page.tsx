@@ -23,10 +23,32 @@ interface UserResponse {
   transcription?: string;
 }
 
+interface TranscriptResponse {
+  round: number;
+  transcript: string;
+}
+
+interface AllResponsesData {
+  success: boolean;
+  responses: TranscriptResponse[];
+}
+
+interface AnalysisResult {
+  analysis: string;
+}
+
+interface WavRecording {
+  audioData: number[];
+  processor: ScriptProcessorNode;
+  source: MediaStreamAudioSourceNode;
+  sampleRate: number;
+}
+
 // WebKit AudioContext 타입 정의(사파리 대응)
 declare global {
   interface Window {
     webkitAudioContext?: typeof AudioContext;
+    currentWavRecording?: WavRecording | null;
   }
 }
 
@@ -131,243 +153,196 @@ export default function SimulationPage() {
     if (scenarioId) fetchScenario();
   }, [scenarioId]);
 
-  // 오디오 초기화
-  useEffect(() => {
-    const init = async () => {
-      try {
-        await initializeAudio();
-        setIsAudioReady(true);
-      } catch (error) {
-        console.error("오디오 초기화 실패:", error);
-        alert("마이크 권한이 필요합니다. 브라우저 설정을 확인해주세요.");
-        setIsAudioReady(false);
+  // WAV 녹음 시작
+  const startWavRecording = useCallback(() => {
+    if (!audioContextRef.current || !streamRef.current) {
+      throw new Error('오디오 컨텍스트가 초기화되지 않음')
+    }
+
+    // 녹음 데이터 초기화
+    recordedChunksRef.current = [];
+
+    // AudioContext 설정
+    const audioContext = audioContextRef.current;
+    const source = audioContext.createMediaStreamSource(streamRef.current);
+
+    // ScriptProcessorNode 설정
+    const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
+    
+    const audioData: number[] = []
+    
+    scriptProcessor.onaudioprocess = (e) => {
+      const input = e.inputBuffer.getChannelData(0)
+      for (let i = 0; i < input.length; i++) {
+        audioData.push(input[i])
       }
-    };
-    init();
-    return () => cleanup();
+    }
+    
+    source.connect(scriptProcessor)
+    scriptProcessor.connect(audioContext.destination)
+    
+    // 녹음 데이터 저장
+    window.currentWavRecording = {
+      audioData,
+      processor: scriptProcessor,
+      source,
+      sampleRate: audioContext.sampleRate
+    }
   }, []);
 
-  // 라운드 스타트
-  useEffect(() => {
-    if (isAudioReady && scenario && !isLoadingScenario) {
-      console.log("=== 시뮬레이션 시작 ===");
-      console.log("오디오 준비 완료, 첫 번째 라운드 시작");
-      console.log("시나리오 정보:", {
-        id: scenario.id,
-        title: scenario.title,
-        totalRounds: scenario.rounds.length
-      });
-      startCurrentRound();
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isAudioReady, scenario, isLoadingScenario]);
-
-  // currentRound 상태 변화 감지하여 자동으로 다음 라운드 시작
-  useEffect(() => {
-    if (scenario && currentRound > 0 && currentRound < scenario.rounds.length) {
-      console.log(`=== currentRound 상태 변화 감지: ${currentRound} ===`);
-      console.log(`자동으로 라운드 ${currentRound + 1} 시작...`);
+  // WAV 녹음 중단
+  const stopWavRecording = useCallback((): Blob | null => {
+    const recording = window.currentWavRecording
+    if (!recording) return null
+    
+    try {
+      recording.source.disconnect()
+      recording.processor.disconnect()
       
-      // 짧은 딜레이 후 라운드 시작
-      setTimeout(() => {
-        startCurrentRound();
-      }, 100);
+      // WAV 파일 생성
+      const wavBuffer = createWavBuffer(recording.audioData, recording.sampleRate)
+      const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' })
+      
+      // 정리
+      window.currentWavRecording = null
+      
+      return wavBlob
+    } catch (error) {
+      console.error('WAV 녹음 중단 실패:', error)
+      return null
     }
-  }, [currentRound, scenario, startCurrentRound]);
+  }, []);
 
-  // 현재 라운드 시작
-  const startCurrentRound = useCallback(async () => {
+  // WAV 버퍼 생성
+  const createWavBuffer = useCallback((audioData: number[], sampleRate: number): ArrayBuffer => {
+    const length = audioData.length
+    const buffer = new ArrayBuffer(44 + length * 2)
+    const view = new DataView(buffer)
+    
+    // WAV 헤더 작성
+    const writeString = (offset: number, string: string) => {
+      for (let i = 0; i < string.length; i++) {
+        view.setUint8(offset + i, string.charCodeAt(i))
+      }
+    }
+    
+    writeString(0, 'RIFF')
+    view.setUint32(4, 36 + length * 2, true)
+    writeString(8, 'WAVE')
+    writeString(12, 'fmt ')
+    view.setUint32(16, 16, true)
+    view.setUint16(20, 1, true)
+    view.setUint16(22, 1, true) // 모노
+    view.setUint32(24, sampleRate, true)
+    view.setUint32(28, sampleRate * 2, true)
+    view.setUint16(32, 2, true)
+    view.setUint16(34, 16, true)
+    writeString(36, 'data')
+    view.setUint32(40, length * 2, true)
+    
+    // 오디오 데이터 작성
+    let offset = 44
+    for (let i = 0; i < length; i++) {
+      const sample = Math.max(-1, Math.min(1, audioData[i]))
+      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true)
+      offset += 2
+    }
+    
+    return buffer
+  }, []);
+
+  // 모든 응답을 수집하여 분석하는 함수
+  const analyzeAllResponses = useCallback(async () => {
     if (!scenario) return;
-
-    console.log(`=== 라운드 ${currentRound + 1} 시작 (총 ${scenario.rounds.length}라운드) ===`);
-    console.log(`현재 currentRound 상태: ${currentRound}`);
-    console.log(`배열 인덱스: ${currentRound}, 실제 라운드 번호: ${currentRound + 1}`);
-
-    // 모든 라운드 완료 체크
-    if (currentRound >= scenario.rounds.length) {
-      console.log("모든 라운드 완료! 최종 분석 시작...");
-      await analyzeAllResponses();
-      return;
-    }
-
-    setPhase("playing");
-    const round = scenario.rounds[currentRound];
-
-    console.log(`라운드 ${currentRound + 1} 질문:`, round.question);
-    console.log(`라운드 ${currentRound + 1} 오디오 URL:`, round.audio_url);
-
-    const audio = new Audio(round.audio_url);
-    audioRef.current = audio;
-
-    audio.onended = () => {
-      console.log(`라운드 ${currentRound + 1} 오디오 재생 완료, 리스닝 시작`);
-      startListening();
-    };
     
-    audio.onerror = (e) => {
-      console.error("오디오 재생 실패:", e);
-      alert("오디오를 재생할 수 없습니다. 리스닝으로 바로 진행합니다.");
-      startListening();
-    };
-
     try {
-      await audio.play();
-      console.log(`라운드 ${currentRound + 1} 오디오 재생 시작`);
-    } catch (e) {
-      console.error("오디오 재생 오류:", e);
-      // 자동재생 제한 등의 경우 바로 리스닝으로 진행
-      console.log("오디오 자동재생 실패, 리스닝으로 바로 진행");
-      startListening();
-    }
-  }, [scenario, currentRound]);
-
-  // 오디오 시스템 초기화
-  const initializeAudio = async () => {
-    console.log("오디오 초기화 시작...");
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        echoCancellation: true,
-        noiseSuppression: true,
-        autoGainControl: true,
-        sampleRate: 16000, // 16kHz로 설정
-        channelCount: 1,
-      },
-    });
-    streamRef.current = stream;
-
-    // AudioContext (크로스브라우저)
-    const ACtor = window.AudioContext || window.webkitAudioContext!;
-    audioContextRef.current = new ACtor();
-    if (audioContextRef.current.state === "suspended") {
-      await audioContextRef.current.resume();
-    }
-    
-    // VAD 초기화는 여기서만 한 번
-    const source = audioContextRef.current.createMediaStreamSource(stream);
-    VoiceActivityDetector.init(audioContextRef.current, source);
-
-    console.log("WAV 녹음 설정 완료");
-  };
-
-  // 리스닝 시작
-  const startListening = useCallback(() => {
-    console.log("음성 인식 시작");
-    setPhase("listening");
-    if (!VoiceActivityDetector.isInitialized) {
-      console.error("VAD가 초기화되지 않음");
-      return;
-    }
-
-    try {
-      // WAV 직접 녹음 시작
-      startWavRecording();
-      console.log("WAV 녹음 시작됨");
-    } catch (error) {
-      console.error("녹음 시작 실패:", error);
-      return;
-    }
-
-    // VAD 루프
-    vadIntervalRef.current = setInterval(() => {
-      const isVoice = VoiceActivityDetector.isVoiceDetected();
-      if (isVoice) {
-        if (silenceTimerRef.current) {
-          clearTimeout(silenceTimerRef.current);
-          silenceTimerRef.current = null;
-        }
-      } else {
-        if (!silenceTimerRef.current) {
-          silenceTimerRef.current = setTimeout(() => {
-            console.log("침묵 감지, 녹음 중단");
-            stopListening();
-          }, VoiceActivityDetector.SILENCE_DURATION);
-        }
-      }
-    }, 100);
-
-    // 하드 타임아웃(안전장치)
-    setTimeout(() => {
-      if ((window as unknown as Record<string, unknown>).currentWavRecording) {
-        console.log("타임아웃 도달, 녹음 중단");
-        stopListening();
-      }
-    }, 50_000);
-  }, []);
-
-  // 리스닝 중단
-  const stopListening = useCallback(() => {
-    setPhase("processing");
-    if (vadIntervalRef.current) {
-      clearInterval(vadIntervalRef.current);
-      vadIntervalRef.current = null;
-    }
-    if (silenceTimerRef.current) {
-      clearTimeout(silenceTimerRef.current);
-      silenceTimerRef.current = null;
-    }
-
-    // MediaRecorder 녹음 중단
-    if ((window as unknown as Record<string, unknown>).currentWavRecording) {
-      const wavBlob = stopWavRecording();
-      if (wavBlob) {
-        handleRecordingComplete(wavBlob);
-      } else {
-        console.error("WAV 녹음 중단되지 않음");
-        setPhase("listening");
-      }
-    } else {
-      console.error("WAV 녹음이 중단되지 않음");
-      setPhase("listening");
-    }
-  }, []);
-
-  // 녹음 완료 → STT
-  const handleRecordingComplete = async (audioBlob: Blob) => {
-    try {
+      setPhase("processing");
       setIsLoading(true);
-      const fileName = `round_${currentRound + 1}.wav`;
 
-      const formData = new FormData();
-      formData.append("audio_file", audioBlob, fileName);
-      formData.append("round", String(currentRound + 1));
+      console.log("최종 분석을 위해 모든 응답 수집 중...");
+      
+      // 모든 라운드 응답을 GET으로 한번에 가져오기
+      const allResponsesRes = await fetch("/api/simulation/stt", {
+        method: "GET",
+        cache: "no-cache"
+      });
+      
+      if (!allResponsesRes.ok) {
+        throw new Error(`모든 응답 조회 실패: ${allResponsesRes.status}`);
+      }
+      
+      const allResponsesData = await allResponsesRes.json() as AllResponsesData;
+      console.log("모든 응답 데이터:", allResponsesData);
 
-      console.log(`라운드 ${currentRound + 1} STT 요청 (POST)`);
-      const res = await fetch("/api/simulation/stt", { 
-        method: "POST", 
-        body: formData 
+      if (!allResponsesData.success || !allResponsesData.responses) {
+        throw new Error("응답 데이터가 올바르지 않습니다.");
+      }
+
+      // Q&A 형태로 transcript 생성
+      const transcript = scenario.rounds
+        .map((round, index) => {
+          const roundNumber = index + 1;
+          const userResponse = allResponsesData.responses.find(
+            (r: TranscriptResponse) => r.round === roundNumber
+          );
+          const answer = userResponse?.transcript || "[응답 없음]";
+          
+          return `Q${roundNumber}: ${round.question}\nA${roundNumber}: ${answer}`;
+        })
+        .join("\n\n");
+
+      console.log("최종 분석용 transcript:", transcript);
+
+      // /api/simulation/analyze에 POST 요청
+      const analysisRes = await fetch("/api/simulation/analyze", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ 
+          transcript,
+          scenario_id: scenario.id,
+          scenario_title: scenario.title
+        }),
       });
 
-      if (!res.ok) {
-        throw new Error(`STT POST 실패 (status ${res.status})`);
+      if (!analysisRes.ok) {
+        throw new Error(`분석 요청 실패: ${analysisRes.status}`);
       }
-
-      const sttResult = await res.json();
-      if (!sttResult?.success) {
-        throw new Error(sttResult?.error || "STT POST 실패");
-      }
-
-      console.log(`라운드 ${currentRound + 1} POST 완료, transcript:`, sttResult.transcript);
       
-      // POST 완료 후 transcript를 받을 때까지 폴링
-      await waitForTranscript(currentRound + 1);
+      const analysisResult = await analysisRes.json() as AnalysisResult;
+      console.log("최종 분석 결과:", analysisResult);
+
+      // 결과를 sessionStorage에 저장
+      const finalResult = {
+        scenario: {
+          id: scenario.id,
+          title: scenario.title,
+          rounds: scenario.rounds
+        },
+        userResponses: allResponsesData.responses,
+        analysis: analysisResult.analysis,
+        timestamp: new Date().toISOString()
+      };
+      
+      sessionStorage.setItem("simulationResult", JSON.stringify(finalResult));
+
+      setPhase("completed");
+      
+      // 결과 페이지로 이동
+      setTimeout(() => {
+        router.push("/simulation/results");
+      }, 1000);
 
     } catch (error) {
-      console.error("STT 처리 실패:", error);
-      const msg = error instanceof Error ? error.message : "알 수 없는 오류";
-      if (confirm(`음성 인식 실패: ${msg}\n다시 시도할까요?`)) {
-        setPhase("listening");
-        startListening();
-      } else {
-        setPhase("preparing");
-        alert("다시 시도하려면 페이지를 새로고침하세요.");
-      }
+      console.error("최종 분석 실패:", error);
+      alert(`분석 중 오류가 발생했습니다: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
+      setPhase("preparing");
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [scenario, router]);
 
   // transcript를 받을 때까지 대기하는 함수
-  const waitForTranscript = async (round: number): Promise<void> => {
+  const waitForTranscript = useCallback(async (round: number): Promise<void> => {
     return new Promise((resolve, reject) => {
       let attempts = 0;
       const maxAttempts = 60; // 최대 60초 대기
@@ -435,198 +410,201 @@ export default function SimulationPage() {
       // 즉시 첫 번째 확인 시작
       checkTranscript();
     });
-  };
+  }, [scenario, analyzeAllResponses]);
 
-  // 모든 응답을 수집하여 분석하는 함수
-  const analyzeAllResponses = async () => {
-    if (!scenario) return;
-    
+  // 녹음 완료 → STT
+  const handleRecordingComplete = useCallback(async (audioBlob: Blob) => {
     try {
-      setPhase("processing");
       setIsLoading(true);
+      const fileName = `round_${currentRound + 1}.wav`;
 
-      console.log("최종 분석을 위해 모든 응답 수집 중...");
-      
-      // 모든 라운드 응답을 GET으로 한번에 가져오기
-      const allResponsesRes = await fetch("/api/simulation/stt", {
-        method: "GET",
-        cache: "no-cache"
-      });
-      
-      if (!allResponsesRes.ok) {
-        throw new Error(`모든 응답 조회 실패: ${allResponsesRes.status}`);
-      }
-      
-      const allResponsesData = await allResponsesRes.json();
-      console.log("모든 응답 데이터:", allResponsesData);
+      const formData = new FormData();
+      formData.append("audio_file", audioBlob, fileName);
+      formData.append("round", String(currentRound + 1));
 
-      if (!allResponsesData.success || !allResponsesData.responses) {
-        throw new Error("응답 데이터가 올바르지 않습니다.");
-      }
-
-      // Q&A 형태로 transcript 생성
-      const transcript = scenario.rounds
-        .map((round, index) => {
-          const roundNumber = index + 1;
-          const userResponse = allResponsesData.responses.find(
-            (r: any) => r.round === roundNumber
-          );
-          const answer = userResponse?.transcript || "[응답 없음]";
-          
-          return `Q${roundNumber}: ${round.question}\nA${roundNumber}: ${answer}`;
-        })
-        .join("\n\n");
-
-      console.log("최종 분석용 transcript:", transcript);
-
-      // /api/simulation/analyze에 POST 요청
-      const analysisRes = await fetch("/api/simulation/analyze", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ 
-          transcript,
-          scenario_id: scenario.id,
-          scenario_title: scenario.title
-        }),
+      console.log(`라운드 ${currentRound + 1} STT 요청 (POST)`);
+      const res = await fetch("/api/simulation/stt", { 
+        method: "POST", 
+        body: formData 
       });
 
-      if (!analysisRes.ok) {
-        throw new Error(`분석 요청 실패: ${analysisRes.status}`);
+      if (!res.ok) {
+        throw new Error(`STT POST 실패 (status ${res.status})`);
       }
-      
-      const analysisResult = await analysisRes.json();
-      console.log("최종 분석 결과:", analysisResult);
 
-      // 결과를 sessionStorage에 저장
-      const finalResult = {
-        scenario: {
-          id: scenario.id,
-          title: scenario.title,
-          rounds: scenario.rounds
-        },
-        userResponses: allResponsesData.responses,
-        analysis: analysisResult.analysis,
-        timestamp: new Date().toISOString()
-      };
-      
-      sessionStorage.setItem("simulationResult", JSON.stringify(finalResult));
+      const sttResult = await res.json();
+      if (!sttResult?.success) {
+        throw new Error(sttResult?.error || "STT POST 실패");
+      }
 
-      setPhase("completed");
+      console.log(`라운드 ${currentRound + 1} POST 완료, transcript:`, sttResult.transcript);
       
-      // 결과 페이지로 이동
-      setTimeout(() => {
-        router.push("/simulation/results");
-      }, 1000);
+      // POST 완료 후 transcript를 받을 때까지 폴링
+      await waitForTranscript(currentRound + 1);
 
     } catch (error) {
-      console.error("최종 분석 실패:", error);
-      alert(`분석 중 오류가 발생했습니다: ${error instanceof Error ? error.message : "알 수 없는 오류"}`);
-      setPhase("preparing");
+      console.error("STT 처리 실패:", error);
+      const msg = error instanceof Error ? error.message : "알 수 없는 오류";
+      if (confirm(`음성 인식 실패: ${msg}\n다시 시도할까요?`)) {
+        setPhase("listening");
+        startListening();
+      } else {
+        setPhase("preparing");
+        alert("다시 시도하려면 페이지를 새로고침하세요.");
+      }
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [currentRound, waitForTranscript]);
 
-  // WAV 녹음 시작
-  const startWavRecording = () => {
-    if (!audioContextRef.current || !streamRef.current) {
-      throw new Error('오디오 컨텍스트가 초기화되지 않음')
+  // 리스닝 중단
+  const stopListening = useCallback(() => {
+    setPhase("processing");
+    if (vadIntervalRef.current) {
+      clearInterval(vadIntervalRef.current);
+      vadIntervalRef.current = null;
+    }
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
     }
 
-    // 녹음 데이터 초기화
-    recordedChunksRef.current = [];
-
-    // AudioContext 설정
-    const audioContext = audioContextRef.current;
-    const source = audioContext.createMediaStreamSource(streamRef.current);
-
-    // ScriptProcessorNode 설정
-    const scriptProcessor = audioContext.createScriptProcessor(4096, 1, 1);
-    
-    const audioData: number[] = []
-    
-    scriptProcessor.onaudioprocess = (e) => {
-      const input = e.inputBuffer.getChannelData(0)
-      for (let i = 0; i < input.length; i++) {
-        audioData.push(input[i])
+    // MediaRecorder 녹음 중단
+    if (window.currentWavRecording) {
+      const wavBlob = stopWavRecording();
+      if (wavBlob) {
+        handleRecordingComplete(wavBlob);
+      } else {
+        console.error("WAV 녹음 중단되지 않음");
+        setPhase("listening");
       }
+    } else {
+      console.error("WAV 녹음이 중단되지 않음");
+      setPhase("listening");
     }
-    
-    source.connect(scriptProcessor)
-    scriptProcessor.connect(audioContext.destination)
-    
-    // 녹음 데이터 저장
-    ;(window as any).currentWavRecording = {
-      audioData,
-      processor: scriptProcessor,
-      source,
-      sampleRate: audioContext.sampleRate
-    }
-  }
+  }, [stopWavRecording, handleRecordingComplete]);
 
-  // WAV 녹음 중단
-  const stopWavRecording = (): Blob | null => {
-    const recording = (window as any).currentWavRecording
-    if (!recording) return null
-    
+  // 리스닝 시작
+  const startListening = useCallback(() => {
+    console.log("음성 인식 시작");
+    setPhase("listening");
+    if (!VoiceActivityDetector.isInitialized) {
+      console.error("VAD가 초기화되지 않음");
+      return;
+    }
+
     try {
-      recording.source.disconnect()
-      recording.processor.disconnect()
-      
-      // WAV 파일 생성
-      const wavBuffer = createWavBuffer(recording.audioData, recording.sampleRate)
-      const wavBlob = new Blob([wavBuffer], { type: 'audio/wav' })
-      
-      // 정리
-      ;(window as any).currentWavRecording = null
-      
-      return wavBlob
+      // WAV 직접 녹음 시작
+      startWavRecording();
+      console.log("WAV 녹음 시작됨");
     } catch (error) {
-      console.error('WAV 녹음 중단 실패:', error)
-      return null
+      console.error("녹음 시작 실패:", error);
+      return;
     }
-  }
 
-  // WAV 버퍼 생성
-  const createWavBuffer = (audioData: number[], sampleRate: number): ArrayBuffer => {
-    const length = audioData.length
-    const buffer = new ArrayBuffer(44 + length * 2)
-    const view = new DataView(buffer)
-    
-    // WAV 헤더 작성
-    const writeString = (offset: number, string: string) => {
-      for (let i = 0; i < string.length; i++) {
-        view.setUint8(offset + i, string.charCodeAt(i))
+    // VAD 루프
+    vadIntervalRef.current = setInterval(() => {
+      const isVoice = VoiceActivityDetector.isVoiceDetected();
+      if (isVoice) {
+        if (silenceTimerRef.current) {
+          clearTimeout(silenceTimerRef.current);
+          silenceTimerRef.current = null;
+        }
+      } else {
+        if (!silenceTimerRef.current) {
+          silenceTimerRef.current = setTimeout(() => {
+            console.log("침묵 감지, 녹음 중단");
+            stopListening();
+          }, VoiceActivityDetector.SILENCE_DURATION);
+        }
       }
+    }, 100);
+
+    // 하드 타임아웃(안전장치)
+    setTimeout(() => {
+      if (window.currentWavRecording) {
+        console.log("타임아웃 도달, 녹음 중단");
+        stopListening();
+      }
+    }, 50_000);
+  }, [startWavRecording, stopListening]);
+
+  // 현재 라운드 시작
+  const startCurrentRound = useCallback(async () => {
+    if (!scenario) return;
+
+    console.log(`=== 라운드 ${currentRound + 1} 시작 (총 ${scenario.rounds.length}라운드) ===`);
+    console.log(`현재 currentRound 상태: ${currentRound}`);
+    console.log(`배열 인덱스: ${currentRound}, 실제 라운드 번호: ${currentRound + 1}`);
+
+    // 모든 라운드 완료 체크
+    if (currentRound >= scenario.rounds.length) {
+      console.log("모든 라운드 완료! 최종 분석 시작...");
+      await analyzeAllResponses();
+      return;
+    }
+
+    setPhase("playing");
+    const round = scenario.rounds[currentRound];
+
+    console.log(`라운드 ${currentRound + 1} 질문:`, round.question);
+    console.log(`라운드 ${currentRound + 1} 오디오 URL:`, round.audio_url);
+
+    const audio = new Audio(round.audio_url);
+    audioRef.current = audio;
+
+    audio.onended = () => {
+      console.log(`라운드 ${currentRound + 1} 오디오 재생 완료, 리스닝 시작`);
+      startListening();
+    };
+    
+    audio.onerror = (e) => {
+      console.error("오디오 재생 실패:", e);
+      alert("오디오를 재생할 수 없습니다. 리스닝으로 바로 진행합니다.");
+      startListening();
+    };
+
+    try {
+      await audio.play();
+      console.log(`라운드 ${currentRound + 1} 오디오 재생 시작`);
+    } catch (e) {
+      console.error("오디오 재생 오류:", e);
+      // 자동재생 제한 등의 경우 바로 리스닝으로 진행
+      console.log("오디오 자동재생 실패, 리스닝으로 바로 진행");
+      startListening();
+    }
+  }, [scenario, currentRound, analyzeAllResponses, startListening]);
+
+  // 오디오 시스템 초기화
+  const initializeAudio = useCallback(async () => {
+    console.log("오디오 초기화 시작...");
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: {
+        echoCancellation: true,
+        noiseSuppression: true,
+        autoGainControl: true,
+        sampleRate: 16000, // 16kHz로 설정
+        channelCount: 1,
+      },
+    });
+    streamRef.current = stream;
+
+    // AudioContext (크로스브라우저)
+    const ACtor = window.AudioContext || window.webkitAudioContext!;
+    audioContextRef.current = new ACtor();
+    if (audioContextRef.current.state === "suspended") {
+      await audioContextRef.current.resume();
     }
     
-    writeString(0, 'RIFF')
-    view.setUint32(4, 36 + length * 2, true)
-    writeString(8, 'WAVE')
-    writeString(12, 'fmt ')
-    view.setUint32(16, 16, true)
-    view.setUint16(20, 1, true)
-    view.setUint16(22, 1, true) // 모노
-    view.setUint32(24, sampleRate, true)
-    view.setUint32(28, sampleRate * 2, true)
-    view.setUint16(32, 2, true)
-    view.setUint16(34, 16, true)
-    writeString(36, 'data')
-    view.setUint32(40, length * 2, true)
-    
-    // 오디오 데이터 작성
-    let offset = 44
-    for (let i = 0; i < length; i++) {
-      const sample = Math.max(-1, Math.min(1, audioData[i]))
-      view.setInt16(offset, sample < 0 ? sample * 0x8000 : sample * 0x7FFF, true)
-      offset += 2
-    }
-    
-    return buffer
-  }
+    // VAD 초기화는 여기서만 한 번
+    const source = audioContextRef.current.createMediaStreamSource(stream);
+    VoiceActivityDetector.init(audioContextRef.current, source);
+
+    console.log("WAV 녹음 설정 완료");
+  }, []);
 
   // 정리
-  const cleanup = () => {
+  const cleanup = useCallback(() => {
     console.log("오디오 정리 시작");
     if (vadIntervalRef.current) {
       clearInterval(vadIntervalRef.current);
@@ -640,8 +618,8 @@ export default function SimulationPage() {
       audioRef.current.pause();
       audioRef.current = null;
     }
-    if ((window as any).currentWavRecording) {
-      (window as any).currentWavRecording = null;
+    if (window.currentWavRecording) {
+      window.currentWavRecording = null;
     }
     if (streamRef.current) {
       streamRef.current.getTracks().forEach((t) => t.stop());
@@ -653,7 +631,50 @@ export default function SimulationPage() {
     }
     VoiceActivityDetector.cleanup();
     console.log("오디오 정리 완료");
-  };
+  }, []);
+
+  // 오디오 초기화
+  useEffect(() => {
+    const init = async () => {
+      try {
+        await initializeAudio();
+        setIsAudioReady(true);
+      } catch (error) {
+        console.error("오디오 초기화 실패:", error);
+        alert("마이크 권한이 필요합니다. 브라우저 설정을 확인해주세요.");
+        setIsAudioReady(false);
+      }
+    };
+    init();
+    return () => cleanup();
+  }, [initializeAudio, cleanup]);
+
+  // 라운드 스타트
+  useEffect(() => {
+    if (isAudioReady && scenario && !isLoadingScenario) {
+      console.log("=== 시뮬레이션 시작 ===");
+      console.log("오디오 준비 완료, 첫 번째 라운드 시작");
+      console.log("시나리오 정보:", {
+        id: scenario.id,
+        title: scenario.title,
+        totalRounds: scenario.rounds.length
+      });
+      startCurrentRound();
+    }
+  }, [isAudioReady, scenario, isLoadingScenario, startCurrentRound]);
+
+  // currentRound 상태 변화 감지하여 자동으로 다음 라운드 시작
+  useEffect(() => {
+    if (scenario && currentRound > 0 && currentRound < scenario.rounds.length) {
+      console.log(`=== currentRound 상태 변화 감지: ${currentRound} ===`);
+      console.log(`자동으로 라운드 ${currentRound + 1} 시작...`);
+      
+      // 짧은 딜레이 후 라운드 시작
+      setTimeout(() => {
+        startCurrentRound();
+      }, 100);
+    }
+  }, [currentRound, scenario, startCurrentRound]);
 
   const getPhaseMessage = () => {
     switch (phase) {

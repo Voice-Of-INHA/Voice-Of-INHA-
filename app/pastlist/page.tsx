@@ -1,6 +1,6 @@
 "use client"
 
-import { useState, useEffect } from "react"
+import { useState, useEffect, useCallback } from "react"
 import HelpModal from "../components/modals/HelpModal"
 
 interface AnalysisRecord {
@@ -58,7 +58,7 @@ export default function PastListPage() {
   const [showHelpModal, setShowHelpModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  const loadAnalysisRecords = async () => {
+  const loadAnalysisRecords = useCallback(async () => {
     setIsLoading(true)
     setError(null)
 
@@ -119,11 +119,11 @@ export default function PastListPage() {
     } finally {
       setIsLoading(false)
     }
-  }
+  }, [])
 
   useEffect(() => {
     loadAnalysisRecords()
-  }, [])
+  }, [loadAnalysisRecords])
 
   useEffect(() => {
     let filtered = records
