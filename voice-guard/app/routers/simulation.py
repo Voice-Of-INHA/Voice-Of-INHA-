@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, UploadFile, File
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from typing import Dict, Any
-import os, re, json, tempfile
+import os, re, json, tempfile, shutil, subprocess
 
 # ===============================
 # 시뮬레이션 전용 LLM 분석기
@@ -80,7 +80,7 @@ class SimulationAnalyzer:
         return ""
 
     def analyze_dialogue(self, transcript: str) -> Dict[str, Any]:
-        # 총합 코칭용 프롬프트
+        # 총합 코칭용 프롬프트 (로직/프롬프트 변경 없음)
         prompt = f"""
 너의 역할: ‘보이스피싱 대응 훈련’에서 사용자의 **전체 대응 패턴**을 코치처럼 평가하는 전문가.
 입력은 Q1/A1, Q2/A2, Q3/A3로 구성된 **대화 전체 기록**이며, 각 턴별이 아니라 **총합 관점**에서만 피드백을 준다.
@@ -194,9 +194,17 @@ async def analyze(request: BulkAnalyzeRequest):
     result = analyzer.analyze_dialogue(transcript)
     return AnalyzeResponse(**result)
 
-# === STT 업로드 엔드포인트 (녹음 → WAV 업로드) ===
+# === STT 업로드 엔드포인트 (프론트: WebM 업로드 → 서버: ffmpeg로 WAV 변환) ===
 @api_router.post("/stt")
 async def stt(audio_file: UploadFile = File(...)):
+    """
+    프론트는 audio/webm(코덱: opus) 업로드.
+    서버에서 ffmpeg로 16kHz mono LINEAR16 WAV로 변환 후 Google STT 호출.
+    """
+    # ffmpeg 체크
+    if not shutil.which("ffmpeg"):
+        return {"success": False, "error": "ffmpeg 미설치. 서버에 ffmpeg를 설치하세요."}
+
     try:
         # ADC(서비스계정) 준비
         def _adc():
@@ -211,15 +219,34 @@ async def stt(audio_file: UploadFile = File(...)):
                 os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
         _adc()
 
-        # 임시 저장
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            content = await audio_file.read()
-            tmp.write(content)
-            p = tmp.name
+        # 업로드 저장 (확장자 webm 고정)
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".webm") as tmp_in:
+            raw = await audio_file.read()
+            tmp_in.write(raw)
+            in_path = tmp_in.name
 
+        # ffmpeg로 16k mono LINEAR16 WAV 변환
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp_out:
+            out_path = tmp_out.name
+
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-i", in_path,
+            "-ac", "1",
+            "-ar", "16000",
+            "-acodec", "pcm_s16le",
+            out_path
+        ]
+        try:
+            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        except subprocess.CalledProcessError as ce:
+            return {"success": False, "error": f"ffmpeg 변환 실패: {ce.stderr.decode(errors='ignore')[:500]}"}
+
+        # Google STT 호출
         from google.cloud import speech
         client = speech.SpeechClient()
-        with open(p, "rb") as f:
+        with open(out_path, "rb") as f:
             wav = f.read()
 
         audio = speech.RecognitionAudio(content=wav)
@@ -229,32 +256,38 @@ async def stt(audio_file: UploadFile = File(...)):
             enable_automatic_punctuation=True,
             model="latest_short",
             max_alternatives=1,
-            # sample_rate_hertz: WAV 헤더에서 자동 인식
+            sample_rate_hertz=16000,
         )
         resp = client.recognize(config=cfg, audio=audio)
         text = ""
         for r in resp.results:
             if r.alternatives:
                 text += r.alternatives[0].transcript
+
         return {"success": True, "transcript": text}
+
     except Exception as e:
         return {"success": False, "error": str(e)}
     finally:
-        try:
-            if 'p' in locals() and os.path.exists(p):
-                os.unlink(p)
-        except Exception:
-            pass
+        # 임시 파일 정리
+        for p in ["in_path", "out_path"]:
+            try:
+                path = locals().get(p)
+                if path and os.path.exists(path):
+                    os.unlink(path)
+            except Exception:
+                pass
 
 # ===============================
 # 초미니 HTML (하드코딩 Q1~Q3 + 발화 끝남 버튼)
+#   - 프론트: WebM 그대로 업로드 (브라우저 WAV 변환 제거)
 # ===============================
 web_router = APIRouter(prefix="/simulation", tags=["simulation-web"])
 
 @web_router.get("/", response_class=HTMLResponse)
 async def simulation_index():
     return HTMLResponse("""
-<!doctype html><meta charset="utf-8"><title>보이스피싱 시뮬(하드코딩)</title>
+<!doctype html><meta charset="utf-8"><title>보이스피싱 시뮬(하드코딩, WebM 업로드)</title>
 <style>
 body{font:14px system-ui,Segoe UI,Arial;margin:24px}
 button{padding:8px 12px;margin:6px 6px 0 0}
@@ -263,8 +296,8 @@ pre{background:#f6f7f9;padding:10px;border-radius:8px;white-space:pre-wrap;margi
 .small{color:#666}
 code{background:#eef;padding:2px 4px;border-radius:4px}
 </style>
-<h3>Q1/Q2/Q3 하드코딩 · 발화 끝남 → STT → A1/A2/A3 자동 기록</h3>
-<div class="small">※ Q버튼을 누르면 해당 질문 텍스트가 추가되고, 즉시 녹음을 시작합니다(침묵 1초 후 자동 종료).</div>
+<h3>Q1/Q2/Q3 · 발화 끝남 → WebM 업로드 → 서버에서 WAV 변환 → STT</h3>
+<div class="small">※ Q버튼을 누르면 질문 텍스트가 추가되고, 즉시 녹음을 시작합니다(침묵 1초 후 자동 종료).</div>
 <div>
   <button onclick="onQ(1)">Q1 발화 끝남</button>
   <button onclick="onQ(2)">Q2 발화 끝남</button>
@@ -318,9 +351,9 @@ async function startRecording(turn){
     mediaRecorder.onstop = async () => {
       try{
         stream.getTracks().forEach(t=>t.stop());
-        const webm = new Blob(chunks, {type:'audio/webm'});
-        const wav = await toWavResampled(webm, 16000);
-        await doSTT(wav, turn);
+        // WebM 그대로 서버 업로드
+        const webm = new Blob(chunks, {type:'audio/webm;codecs=opus'});
+        await doSTT(webm, turn);
       }catch(e){
         appendLine(`A${turn}: (STT 실패: ${e})`);
         show('STT 실패: '+e);
@@ -351,7 +384,7 @@ function stopRecording(){
   if(silenceTimer){ clearTimeout(silenceTimer); silenceTimer=null; }
   if(hardTimeout){ clearTimeout(hardTimeout); hardTimeout=null; }
 }
-
+ 
 function cleanup(){
   try{ if(ac){ ac.close(); } }catch(e){}
   ac=null; analyser=null; mic=null; dataArr=null;
@@ -380,41 +413,8 @@ function detectSilence(onSilence, timeoutMs, threshold){
   loop();
 }
 
-async function toWavResampled(webmBlob, targetRate){
-  const arr = await webmBlob.arrayBuffer();
-  const ac2 = new (window.AudioContext||window.webkitAudioContext)();
-  const srcBuffer = await ac2.decodeAudioData(arr);
-  const frames = Math.ceil(srcBuffer.duration * targetRate);
-  const off = new OfflineAudioContext(1, frames, targetRate);
-  const src = off.createBufferSource();
-  src.buffer = srcBuffer;
-  src.connect(off.destination);
-  src.start(0);
-  const rendered = await off.startRendering();
-  ac2.close();
-  return new Blob([bufferToWav(rendered)], {type:'audio/wav'});
-}
-
-function bufferToWav(buffer){
-  const ch = 1, len = buffer.length, rate = buffer.sampleRate;
-  const ab = new ArrayBuffer(44 + len*ch*2);
-  const v = new DataView(ab);
-  const w = (o,s)=>{ for(let i=0;i<s.length;i++) v.setUint8(o+i, s.charCodeAt(i)); };
-  w(0,'RIFF'); v.setUint32(4,36+len*ch*2,true); w(8,'WAVE'); w(12,'fmt ');
-  v.setUint32(16,16,true); v.setUint16(20,1,true); v.setUint16(22,ch,true);
-  v.setUint32(24,rate,true); v.setUint32(28,rate*ch*2,true); v.setUint16(32,ch*2,true);
-  v.setUint16(34,16,true); w(36,'data'); v.setUint32(40,len*ch*2,true);
-  let off=44, data = buffer.getChannelData(0);
-  for(let i=0;i<len;i++){
-    let s = Math.max(-1,Math.min(1,data[i]));
-    v.setInt16(off, s<0 ? s*0x8000 : s*0x7FFF, true);
-    off+=2;
-  }
-  return ab;
-}
-
-async function doSTT(wavBlob, turn){
-  const fd = new FormData(); fd.append('audio_file', wavBlob, `a${turn}.wav`);
+async function doSTT(webmBlob, turn){
+  const fd = new FormData(); fd.append('audio_file', webmBlob, `a${turn}.webm`);
   const res = await fetch('/api/simulation/stt', {method:'POST', body:fd});
   let line;
   try{
