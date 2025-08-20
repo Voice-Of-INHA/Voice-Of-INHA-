@@ -23,6 +23,11 @@ interface UserResponse {
   transcription?: string
 }
 
+// WebKit AudioContext 타입 정의
+interface WebKitWindow extends Window {
+  webkitAudioContext: typeof AudioContext
+}
+
 // VAD (Voice Activity Detection) 모듈
 const VoiceActivityDetector = {
   // VAD 설정
@@ -170,7 +175,7 @@ export default function SimulationPage() {
     streamRef.current = stream
     console.log('마이크 스트림 획득 완료')
 
-    audioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)()
+    audioContextRef.current = new window.AudioContext
     if (audioContextRef.current.state === 'suspended') {
       await audioContextRef.current.resume()
     }
@@ -493,7 +498,7 @@ export default function SimulationPage() {
               <div className="text-gray-300">
                 <p className="mb-2">📞 상대방:</p>
                 <p className="text-lg italic border-l-4 border-red-500 pl-4">
-                  "{scenario.rounds[currentRound].question}"
+                  &ldquo;{scenario.rounds[currentRound].question}&rdquo;
                 </p>
               </div>
             )}
