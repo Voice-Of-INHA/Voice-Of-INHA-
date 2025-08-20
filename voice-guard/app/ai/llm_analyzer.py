@@ -1,13 +1,13 @@
 # app/ai/llm_analyzer.py
-import os, json
+import os
+import json
+import time
+import logging
 from datetime import datetime
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlparse
+
 from ..services.gcs_transfer import s3_to_gcs, parse_any_s3_url
-
-
-
-import boto3
-from google.cloud import storage
 from google.cloud import speech_v1 as speech
 from google import genai
 from google.genai import types
@@ -15,9 +15,39 @@ from google.genai import types
 from ..config import settings
 from ..db import SessionLocal
 from ..models.call_log import CallLog
-from ..models.call_analysis import CallAnalysis   # 1단계에서 만든 분석 테이블
+from ..models.call_analysis import CallAnalysis
 
-# ---------- 유틸 ----------
+# ---------------- Logging ----------------
+logger = logging.getLogger("voiceofinha.llm_analyzer")
+if not logger.handlers:
+    _h = logging.StreamHandler()
+    _h.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s - %(message)s"))
+    logger.addHandler(_h)
+logger.setLevel(logging.INFO)
+
+def _log(event: str, **fields):
+    try:
+        logger.info("%s %s", event, json.dumps(fields, ensure_ascii=False))
+    except Exception:
+        logger.info("%s %s", event, fields)
+
+# 대용량 JSON을 청크로 나눠 로깅 (기본 8KB)
+_LOG_CHUNK = int(os.getenv("VOI_LOG_CHUNK", "8000"))
+_LOG_STT_FULL = os.getenv("VOI_LOG_STT_FULL", "1") == "1"
+_LOG_LLM_FULL = os.getenv("VOI_LOG_LLM_FULL", "1") == "1"
+
+def _log_big(event: str, payload: Dict[str, Any], chunk_size: int = _LOG_CHUNK):
+    try:
+        s = json.dumps(payload, ensure_ascii=False)
+    except Exception:
+        s = str(payload)
+    total = len(s)
+    parts = (total + chunk_size - 1) // chunk_size
+    for i in range(parts):
+        seg = s[i*chunk_size:(i+1)*chunk_size]
+        logger.info("%s_part_%d/%d %s", event, i+1, parts, seg)
+
+# ---------------- 유틸 ----------------
 def _sec_to_tag(sec: float) -> str:
     m = int(sec // 60); s = sec - 60*m
     return f"{m:02d}:{s:04.1f}"
@@ -32,48 +62,45 @@ def _vertex_client():
         raise RuntimeError("GCP_PROJECT_ID is required")
     return genai.Client(vertexai=True, project=proj, location=loc)
 
-# ---------- S3 -> GCS ----------
-def _parse_s3_url(s3_url: str) -> tuple[str, str]:
-    if not s3_url.startswith("s3://"):
-        raise ValueError("s3://bucket/key needed")
-    _, rest = s3_url.split("://", 1)
-    return rest.split("/", 1)[0], rest.split("/", 1)[1]
+def _guess_encoding_from_uri(gs_uri: str):
+    ext = os.path.splitext(urlparse(gs_uri).path)[1].lower()
+    if ext in (".webm", ".weba"):
+        return speech.RecognitionConfig.AudioEncoding.WEBM_OPUS
+    if ext in (".ogg", ".opus"):
+        return speech.RecognitionConfig.AudioEncoding.OGG_OPUS
+    if ext in (".wav",):
+        return speech.RecognitionConfig.AudioEncoding.LINEAR16
+    return speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED
 
-def _s3_to_gcs(s3_url: str, gcs_bucket: str, gcs_key: str) -> str:
-    s3_bucket, s3_key = _parse_s3_url(s3_url)
-    s3 = boto3.client("s3")
-    storage_client = storage.Client()
-    blob = storage_client.bucket(gcs_bucket).blob(gcs_key)
-    obj = s3.get_object(Bucket=s3_bucket, Key=s3_key)
-    body = obj["Body"]
-    with blob.open("wb") as f:
-        while True:
-            chunk = body.read(8 * 1024 * 1024)
-            if not chunk: break
-            f.write(chunk)
-    return f"gs://{gcs_bucket}/{gcs_key}"
-
-# ---------- Google STT v1 (장문 + 화자 2명) ----------
+# ---------------- Google STT v1 (장문 + 화자 분할) ----------------
 def _longrun_diarization_gcs(gs_uri: str, language_code="ko-KR") -> List[Dict[str, Any]]:
     client = speech.SpeechClient()
     diar = speech.SpeakerDiarizationConfig(
         enable_speaker_diarization=True, min_speaker_count=2, max_speaker_count=2
     )
-    cfg = speech.RecognitionConfig(
+    encoding = _guess_encoding_from_uri(gs_uri)
+
+    # ko-KR은 phone_call 미지원 → 기본 모델 사용
+    cfg_kwargs: Dict[str, Any] = dict(
         language_code=language_code,
         enable_automatic_punctuation=True,
         diarization_config=diar,
-        use_enhanced=True,
-        model="phone_call",
+        model="default",
         audio_channel_count=1,
         enable_separate_recognition_per_channel=False,
     )
+    if encoding != speech.RecognitionConfig.AudioEncoding.ENCODING_UNSPECIFIED:
+        cfg_kwargs["encoding"] = encoding
+
+    cfg = speech.RecognitionConfig(**cfg_kwargs)
     op = client.long_running_recognize(config=cfg, audio=speech.RecognitionAudio(uri=gs_uri))
     resp = op.result(timeout=3*60*60)
-    if not resp.results: return []
+    if not resp.results:
+        return []
 
     words = resp.results[-1].alternatives[0].words
-    tl, cur_spk, cur_words, cur_start = [], None, [], None
+    tl: List[Dict[str, Any]] = []
+    cur_spk, cur_words, cur_start = None, [], None
     for w in words:
         spk = w.speaker_tag
         st = w.start_time.total_seconds() if w.start_time else 0.0
@@ -89,7 +116,7 @@ def _longrun_diarization_gcs(gs_uri: str, language_code="ko-KR") -> List[Dict[st
         seg["role"] = "USER" if seg["spk"] == 1 else "SCAMMER"
     return tl
 
-# ---------- 최종 리포트 프롬프트 + LLM ----------
+# ---------------- LLM 프롬프트 ----------------
 _FINAL_REPORT_PROMPT = """
 당신은 보이스피싱 분석 전문가입니다. 아래 통화 대본(화자 표기 포함)을 근거로 JSON만 출력하세요.
 필수:
@@ -121,14 +148,18 @@ def _call_llm_final_report(full_text: str) -> Dict[str, Any]:
     except Exception:
         return {"risk_score": 0, "risk_level": "LOW", "crime_types": [], "summary": ""}
 
-# ---------- 퍼사드 (바로 쓰는 API) ----------
+# ---------------- 퍼사드 ----------------
 class LlmFinalAnalyzer:
     @staticmethod
     def run_full_analysis(call_id: int, s3_url: Optional[str] = None) -> None:
         """
         입력 URL이 gs:// 면 그대로 사용
         s3:// 또는 https://amazonaws.com/... 이면 S3→GCS 복사 후 사용
+        진행 단계별 로그 + STT/LLM 전체 결과를 청크 로깅
         """
+        t0 = time.time()
+        _log("ANALYSIS_START", call_id=call_id, s3_url=s3_url)
+
         db = SessionLocal()
         try:
             log = db.query(CallLog).filter(CallLog.id == call_id).first()
@@ -137,16 +168,10 @@ class LlmFinalAnalyzer:
 
             row = db.query(CallAnalysis).filter(CallAnalysis.callId == call_id).first()
             if not row:
-                row = CallAnalysis(
-                    callId=call_id,
-                    status="RUNNING",
-                    triggeredAt=datetime.utcnow()
-                )
-                db.add(row)
-                db.commit()
-                db.refresh(row)
+                row = CallAnalysis(callId=call_id, status="RUNNING", triggeredAt=datetime.utcnow())
+                db.add(row); db.commit(); db.refresh(row)
 
-            # audioUrl / audioS3Url 어느 쪽이든 먼저 잡아씀
+            # 원본 URL 확보
             source_url = (
                 s3_url
                 or getattr(log, "audioUrl", None)
@@ -157,40 +182,69 @@ class LlmFinalAnalyzer:
             if not source_url:
                 raise ValueError("audio S3 URL not set")
 
-            # 1) 이미 GCS URI면 그대로
+            # GCS URI 준비
             if source_url.startswith("gs://"):
                 gs_uri = source_url
-
-            # 2) s3:// 또는 https://amazonaws.com/... 이면 복사
-            elif source_url.startswith("s3://") or source_url.startswith("http"):
-                # S3 키의 파일명 일부를 보존해 GCS 키 구성
+                _log("GCS_INPUT", call_id=call_id, gs_uri=gs_uri)
+            elif source_url.startswith(("s3://", "http")):
                 _, s3_key = parse_any_s3_url(source_url)
                 base_name = os.path.basename(s3_key) or f"{call_id}.audio"
                 gcs_key = f"calls/{call_id}/{base_name}"
+                t_copy = time.time()
                 gs_uri = s3_to_gcs(source_url, settings.gcs_bucket, gcs_key)
-
+                _log("S3_TO_GCS_DONE",
+                     call_id=call_id, gs_uri=gs_uri, s3_key=s3_key,
+                     ms=int((time.time()-t_copy)*1000))
             else:
                 raise ValueError(f"Unsupported audio URL: {source_url}")
 
-            # 복사 결과(GCS URI) 저장
             row.audioGcsUri = gs_uri
             db.commit()
 
-            # --- STT → LLM 분석 파이프라인 (기존 로직 그대로 호출) ---
+            # -------- STT --------
+            t_stt = time.time()
+            _log("STT_START", call_id=call_id, gs_uri=gs_uri)
             timeline = _longrun_diarization_gcs(gs_uri, language_code="ko-KR")
-            full_text = _to_llm_text(timeline)
-            report = _call_llm_final_report(full_text)
+            ms_stt = int((time.time()-t_stt)*1000)
 
-            row.transcript = full_text
+            # STT 요약 + 전체 타임라인/트랜스크립트 로깅
+            segs = len(timeline)
+            words = sum(len(seg["text"].split()) for seg in timeline)
+            _log("STT_DONE", call_id=call_id, ms=ms_stt, segments=segs, approx_words=words)
+
+            if _LOG_STT_FULL:
+                _log_big("STT_TIMELINE_FULL", {"call_id": call_id, "timeline": timeline})
+                transcript_full = _to_llm_text(timeline)
+                _log_big("STT_TRANSCRIPT_FULL", {"call_id": call_id, "transcript": transcript_full})
+            else:
+                transcript_full = _to_llm_text(timeline)
+
+            # -------- LLM --------
+            t_llm = time.time()
+            _log("LLM_START", call_id=call_id, transcript_chars=len(transcript_full))
+            report = _call_llm_final_report(transcript_full)
+            ms_llm = int((time.time()-t_llm)*1000)
+            preview = (report.get("summary") or "")[:120] if isinstance(report, dict) else ""
+            _log("LLM_DONE", call_id=call_id, ms=ms_llm, summary_preview=preview)
+
+            if _LOG_LLM_FULL:
+                _log_big("LLM_REPORT_FULL", {"call_id": call_id, "report": report})
+
+            # -------- 결과 저장 --------
+            row.transcript = transcript_full
             row.report = report
-            row.summary = (report.get("summary") or "")[:255]
-            types_ = report.get("crime_types") or []
-            row.crimeType = types_[0] if types_ else None
+            row.summary = (report.get("summary") or "")[:255] if isinstance(report, dict) else None
+            types_ = report.get("crime_types") if isinstance(report, dict) else None
+            row.crimeType = (types_ or [None])[0] if types_ else None
             row.status = "DONE"
             row.completedAt = datetime.utcnow()
             db.commit()
 
+            _log("ANALYSIS_DONE", call_id=call_id, ms_total=int((time.time()-t0)*1000), status="DONE")
+
         except Exception as e:
+            _log("ANALYSIS_ERROR", call_id=call_id, error=str(e))
+            logger.exception("analysis failed: call_id=%s", call_id)
             row = db.query(CallAnalysis).filter(CallAnalysis.callId == call_id).first()
             if row:
                 row.status = "FAILED"
@@ -208,9 +262,9 @@ class LlmFinalAnalyzer:
 
     @staticmethod
     def trigger_if_ready(db, background_tasks, call_id: int) -> bool:
-        """idempotent: PENDING/FAILED만 RUNNING 전이 후 비동기 실행"""
         log = db.query(CallLog).filter(CallLog.id == call_id).with_for_update().first()
-        if not log or not LlmFinalAnalyzer._ready(log): return False
+        if not log or not LlmFinalAnalyzer._ready(log):
+            return False
 
         ana = db.query(CallAnalysis).filter(CallAnalysis.callId == call_id).first()
         if not ana:
@@ -230,7 +284,8 @@ class LlmFinalAnalyzer:
         db = SessionLocal()
         try:
             log = db.query(CallLog).filter(CallLog.id == call_id).first()
-            if not log: return
+            if not log:
+                return
             LlmFinalAnalyzer.run_full_analysis(call_id, s3_url=getattr(log, "audioS3Url", None))
         finally:
             db.close()
