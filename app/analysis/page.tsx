@@ -103,6 +103,7 @@ interface AnalysisResult {
   riskScore: number
   keywords: string[]
   reason: string
+  fraudType?: string  // 백엔드에서 제공하는 사기 유형
   timestamp: number
 }
 
@@ -123,6 +124,7 @@ interface BackendMessage {
   labels?: string[]            // ARRAY of STRING (감지된 라벨들)
   evidence?: string[]          // ARRAY of STRING (증거들)
   reason?: string              // STRING (판단 이유)
+  fraud_type?: string          // STRING (사기 유형)
   actions?: string[]           // ARRAY of STRING (권장 행동들)
   // 시스템 메시지
   message?: string
@@ -297,25 +299,12 @@ export default function AnalysisPage() {
       setIsSaving(true)
       setError(null)
 
-      // 사기 유형 결정 함수
-      const determineFraudType = (keywords: string[], reason: string): string => {
-        const keywordStr = keywords.join(' ').toLowerCase()
-        const reasonStr = reason.toLowerCase()
-        
-        if (keywordStr.includes('검찰') || reasonStr.includes('검찰')) return '검찰사칭'
-        if (keywordStr.includes('경찰') || reasonStr.includes('경찰')) return '경찰사칭'
-        if (keywordStr.includes('은행') || keywordStr.includes('계좌')) return '금융사기'
-        if (keywordStr.includes('택배') || keywordStr.includes('배송')) return '택배사기'
-        if (keywordStr.includes('대출')) return '대출사기'
-        return '기타사기'
-      }
-
       const payload = {
         phone: phoneNumber.trim(),
         totalSeconds: recordingSeconds,
         // 실시간 분석 결과 사용
         riskScore: analysisResult.riskScore,
-        fraudType: determineFraudType(analysisResult.keywords, analysisResult.reason),
+        fraudType: analysisResult.fraudType || '기타사기', // 백엔드에서 받은 fraudType 사용
         keywords: analysisResult.keywords,
         audioUrl: fileUrl,
       }
@@ -331,7 +320,36 @@ export default function AnalysisPage() {
         throw new Error(`백엔드 저장 실패: ${res.status} - ${t}`)
       }
 
-      alert('저장 완료: 통화 기록이 서버에 저장되었습니다.')
+      const responseData = await res.json()
+      console.log('저장 응답:', responseData)
+
+      // 백엔드에서 call_id가 반환되면 분석 API 호출
+      if (responseData.id || responseData.call_id || responseData.callId) {
+        const callId = responseData.id || responseData.call_id || responseData.callId
+        console.log(`분석 API 호출 시작: call_id=${callId}`)
+        
+        try {
+          const analyzeRes = await fetch(`/api/calls/${callId}/analyze`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+          })
+
+          if (analyzeRes.ok) {
+            console.log('분석 API 호출 성공')
+            alert('저장 완료: 통화 기록이 서버에 저장되고 추가 분석이 시작되었습니다.')
+          } else {
+            console.error('분석 API 호출 실패:', analyzeRes.status)
+            alert('저장 완료: 통화 기록이 저장되었으나 추가 분석 시작에 실패했습니다.')
+          }
+        } catch (analyzeError) {
+          console.error('분석 API 호출 에러:', analyzeError)
+          alert('저장 완료: 통화 기록이 저장되었으나 추가 분석 시작에 실패했습니다.')
+        }
+      } else {
+        console.log('응답에서 call_id를 찾을 수 없음:', responseData)
+        alert('저장 완료: 통화 기록이 서버에 저장되었습니다.')
+      }
+
       // 저장 후 초기화
       setPhoneNumber('')
       setShowSaveModal(false)
@@ -363,6 +381,7 @@ export default function AnalysisPage() {
       riskScore: 0,
       keywords: [],
       reason: '',
+      fraudType: undefined,
       timestamp: 0
     })
 
@@ -717,10 +736,11 @@ registerProcessor('resampler-processor', ResamplerProcessor);
                     updateAnalysisResult({
                       type: "analysis_result",
                       risk_score: riskData.riskScore,
-                      risk_level: getRiskLevel(riskData.riskScore), // 프론트에서 계산
+                      risk_level: getRiskLevel(riskData.riskScore),
                       labels: riskData.keywords || [],
                       reason: riskData.reason || '',
-                      evidence: [], // 백엔드에서 제공하지 않음
+                      fraud_type: riskData.fraudType || '', // fraudType 추가
+                      evidence: [],
                       actions: riskData.actions || []
                     })
                   }
@@ -1056,6 +1076,7 @@ registerProcessor('resampler-processor', ResamplerProcessor);
         riskScore: 0,
         keywords: [],
         reason: '',
+        fraudType: undefined,
         timestamp: 0
       })
 
@@ -1205,8 +1226,8 @@ registerProcessor('resampler-processor', ResamplerProcessor);
     setAudioLevel(0)
     setCurrentPartialText('') // partial 텍스트 초기화
     
-    // 위험도가 50% 이상인 경우에만 저장 모달 표시
-    if (finalRiskScore >= 50) {
+    // 위험도가 5% 이상인 경우에만 저장 모달 표시
+    if (finalRiskScore >= 5) {
       console.log(`⚠️ 위험도 ${finalRiskScore}%로 저장 모달 표시`)
       setShowSaveModal(true)
     } else {
