@@ -13,7 +13,21 @@ class SimulationAnalyzer:
     """시뮬레이션 전용 AI 분석기 - 질문 대비 답변 정확성 평가"""
     
     def __init__(self):
-        self.analyzer = VertexRiskAnalyzer()
+        # risk_analyzer와 동일한 클라이언트 생성 방식 사용
+        self.client = self._make_vertex_client()
+    
+    def _make_vertex_client(self):
+        """risk_analyzer와 동일한 Vertex AI 클라이언트 생성"""
+        import os
+        from google import genai
+        
+        project = os.getenv("GCP_PROJECT_ID")
+        location = os.getenv("GCP_LOCATION", "us-central1")
+        if not project:
+            raise RuntimeError("GCP_PROJECT_ID 환경변수를 설정하세요.")
+        
+        # risk_analyzer와 동일한 패턴: vertexai=True로 클라이언트 생성
+        return genai.Client(vertexai=True, project=project, location=location)
     
     def _extract_json(self, text: str) -> str:
         """코드펜스/주석/앞뒤 잡음 제거 후 JSON 본문만 추출"""
@@ -48,59 +62,46 @@ class SimulationAnalyzer:
         except Exception:
             return {}
     
-    def _call_simulation_llm(self, prompt: str) -> str:
-        """시뮬레이션 전용 LLM 호출 - google-genai(Client) 사용"""
-        try:
-            import os
-            from google import genai
-            from google.genai import types
-
-            project = os.getenv("GCP_PROJECT_ID")
-            location = os.getenv("GCP_LOCATION", "us-central1")
-            if not project:
-                raise RuntimeError("GCP_PROJECT_ID 환경변수를 설정하세요.")
-
-            # google-genai는 'configure'가 아니라 Client 인스턴스를 생성해서 사용
-            api_key = os.getenv("GOOGLE_API_KEY")
-            if not api_key:
-                raise RuntimeError("GOOGLE_API_KEY 환경변수를 설정하세요.")
-
-            return genai.Client(vertexai=True, project=project, location=location)
-
-
-
-            # 모델 호출 (contents=str, config=GenerateContentConfig)
-            resp = client.models.generate_content(
-                model="gemini-1.5-flash",
-                contents=prompt,
-                config=types.GenerateContentConfig(
-                    temperature=0.1,
-                    max_output_tokens=1024,
-                ),
-            )
-
-            # 통일된 텍스트 추출
-            text = getattr(resp, "text", None)
-            if not text:
-                # candidates가 있을 때 보정 (방어적)
-                try:
-                    text = resp.candidates[0].content.parts[0].text
-                except Exception:
-                    text = ""
-            return (text or "").strip()
-
-        except Exception as e:
-            print(f"[ERROR] 시뮬레이션 LLM 호출 실패: {e}")
-            raise
+    def _call_simulation_llm(self, prompt: str) -> dict:
+        """
+        risk_analyzer와 '같은 로직'으로 호출:
+        - 같은 SDK (google-genai)
+        - 같은 클라이언트 생성 방식 (vertexai=True)
+        - JSON을 강제하려고 response_mime_type 사용 시도
+        """
+        from google.genai import types
+        
+        resp = self.client.models.generate_content(
+            model="gemini-2.5-flash",
+            contents=prompt,
+            config=types.GenerateContentConfig(
+                temperature=0.1,
+                max_output_tokens=1024,
+                response_mime_type="application/json",  # 되도록 JSON만 받도록 유도
+            ),
+        )
+        
+        text = getattr(resp, "text", "") or ""
+        if not text:
+            # 혹시 text가 비면 candidates에서 보정
+            try:
+                text = resp.candidates[0].content.parts[0].text
+            except Exception:
+                text = ""
+        
+        body = self._extract_json(text)
+        data = self._lenient_json_loads(body)
+        return data or {}
 
     
     def analyze_simulation_answer(self, question: str, answer: str, correct_answer: str, wrong_examples: List[str]) -> Dict[str, Any]:
         """시뮬레이션 답변 분석 - 질문 대비 답변 정확성 평가"""
         
-        # 시뮬레이션 전용 프롬프트 (안전성 친화적)
+        # === 시뮬 전용 프롬프트(원하시는 룰은 그대로 유지) ===
         prompt = f"""
-당신은 '보이스피싱 대응 훈련'을 위한 교육용 시뮬레이션 평가기입니다.
+당신은 '보이스피싱 대응 훈련'을 위한 교육용 시뮬레이션 평가기입니다. 
 개인정보를 생성하거나 요구하지 말고, 오직 점수 산출과 간단한 이유만 제시하세요.
+그리고 각 필드를 반드시 채우세요. 형식을 반드시 유지해야합니다.
 
 [시나리오 질문]: {question}
 [사용자 답변]: {answer}
@@ -121,84 +122,41 @@ class SimulationAnalyzer:
 """
         
         try:
-            # 시뮬레이션 전용 LLM 분석 실행
             print(f"[DEBUG] 시뮬레이션 전용 Google GenAI 호출 시작...")
             print(f"[DEBUG] 프롬프트 길이: {len(prompt)}")
             print(f"[DEBUG] 프롬프트 미리보기: {prompt[:200]}...")
             
-            # LLM 호출
+            # === 같은 로직 + 프롬프트만 다름 ===
             result = self._call_simulation_llm(prompt)
             
-            print(f"[DEBUG] 시뮬레이션 LLM 원본 결과: {result}")
-            print(f"[DEBUG] 시뮬레이션 LLM 응답 타입: {type(result)}")
+            print(f"[DEBUG] 시뮬레이션 LLM 결과: {result}")
             
-            # JSON 파싱
-            parsed = {}
-            if isinstance(result, dict):
-                parsed = result
-            elif isinstance(result, str):
-                body = self._extract_json(result)
-                parsed = self._lenient_json_loads(body)
-            else:
-                parsed = {}
-            
-            print(f"[DEBUG] 정규화된 시뮬레이션 LLM 결과: {parsed}")
-            
-            # 시뮬레이션 전용 점수 추출
-            simulation_score = 0
-            if "simulation_score" in parsed and isinstance(parsed["simulation_score"], (int, float, str)):
-                try:
-                    simulation_score = int(parsed["simulation_score"])
-                    print(f"[DEBUG] 시뮬레이션 LLM에서 simulation_score 추출 성공: {simulation_score}")
-                except Exception as e:
-                    print(f"[DEBUG] simulation_score 변환 실패: {e}")
-                    simulation_score = 0
-            else:
-                print(f"[DEBUG] 시뮬레이션 LLM에서 simulation_score 키 없음: {list(parsed.keys())}")
-            
-            print(f"[DEBUG] 추출된 simulation_score: {simulation_score}")
-            print(f"[DEBUG] simulation_score 타입: {type(simulation_score)}")
-            
-            # 위험도에 따른 점수 계산 (LLM 결과만 사용)
-            if simulation_score == 10:
-                risk_level = "LOW"
-                score = 10
-            elif simulation_score == -5:
-                risk_level = "MEDIUM"
-                score = -5
-            elif simulation_score == -10:
-                risk_level = "HIGH"
-                score = -10
-            else:
-                # LLM이 예상하지 못한 점수를 반환한 경우 기본값
-                print(f"[DEBUG] LLM이 예상하지 못한 점수 반환: {simulation_score}")
-                risk_level = "MEDIUM"
-                score = -5
-                simulation_score = -5
-            
-            return {
-                "risk": risk_level,
-                "score": score,
-                "explanation": parsed.get("reason", "분석 결과가 없습니다."),
-                "feedback": self._generate_feedback(risk_level, score),
-                "simulation_score": simulation_score,
-                "correct_answer": correct_answer,
-                "wrong_examples": wrong_examples
-            }
+            # 시뮬 점수 추출
+            sim = int(result.get("simulation_score", 0))
+            print(f"[DEBUG] 추출된 simulation_score: {sim}")
             
         except Exception as e:
             print(f"[ERROR] 시뮬레이션 분석 실패: {str(e)}")
-            
-            # LLM 실패 시 기본 응답 반환
-            return {
-                "risk": "ERROR",
-                "score": 0,
-                "explanation": f"LLM 분석 실패: {str(e)}",
-                "feedback": "⚠️ AI 분석 중 오류가 발생했습니다. 다시 시도해주세요.",
-                "simulation_score": 0,
-                "correct_answer": correct_answer,
-                "wrong_examples": wrong_examples
-            }
+            sim = -5
+            result = {"reason": "LLM 분석 실패로 기본값 적용"}
+
+        # 시뮬 점수→risk/score 매핑 (시뮬 '전용' 출력 구조 유지)
+        if sim == 10:
+            risk, score = "LOW", 10
+        elif sim == -10:
+            risk, score = "HIGH", -10
+        else:
+            risk, score = "MEDIUM", -5
+
+        return {
+            "risk": risk,
+            "score": score,
+            "explanation": result.get("reason", "분석 결과가 없습니다."),
+            "feedback": self._generate_feedback(risk, score),
+            "simulation_score": sim,                     # ← 시뮬 '전용' 필드
+            "correct_answer": correct_answer,
+            "wrong_examples": wrong_examples,
+        }
     
     def _generate_feedback(self, risk_level: str, score: int) -> str:
         """위험도에 따른 피드백 생성"""

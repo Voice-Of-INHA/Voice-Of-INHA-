@@ -95,7 +95,7 @@ def voice_guard_diag_vertex():
         except Exception:
             from vertexai.preview.generative_models import GenerativeModel  # type: ignore
         vertexai.init(project=_os.getenv("GCP_PROJECT_ID"), location=_os.getenv("GCP_LOCATION", "us-central1"))
-        _ = GenerativeModel("gemini-1.5-flash")
+        _ = GenerativeModel("gemini-2.5-flash")
         return {"ok": True, "msg": "Vertex init OK", "project": _os.getenv("GCP_PROJECT_ID"), "location": _os.getenv("GCP_LOCATION")}
     except Exception as e:
         return {"ok": False, "error": str(e)}
