@@ -18,3 +18,4 @@ class ScenarioBase(BaseModel):
 # 시나리오 상세 조회용 (라운드 포함)
 class ScenarioDetail(ScenarioBase):
     rounds: List[ScenarioRound]
+    guideline: str
