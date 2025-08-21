@@ -10,13 +10,10 @@ interface AnalysisData {
   audioGcsUri: string
   transcript: string
   report: {
-    advice: {
-      items: string[]
-      title: string
-    }
+    advice: string[]
     reasons: Array<{
       type: string
-      basis: string
+      quote: string
     }>
     summary: string
     safe_alt: string
@@ -181,6 +178,61 @@ export default function AnalysisDetailPage() {
     )
   }
 
+  // report 데이터가 없는 경우 처리
+  if (!analysisData.report) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-6xl text-yellow-500 mb-4">⚠️</div>
+          <p className="text-yellow-500 text-lg mb-4">분석 보고서 데이터가 없습니다.</p>
+          <p className="text-gray-400 text-sm mb-6">통화 분석이 완료되지 않았거나 데이터가 누락되었습니다.</p>
+          <div className="space-x-4">
+            <button
+              onClick={loadAnalysisData}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              다시 시도
+            </button>
+            <button
+              onClick={() => router.push("/pastlist")}
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              목록으로
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  // report 데이터의 필수 필드들이 없는 경우 처리
+  const report = analysisData.report
+  if (!report.risk_level || !report.risk_score || !report.red_flags || !report.reasons || !report.timeline || !report.advice) {
+    return (
+      <div className="min-h-screen bg-black flex items-center justify-center">
+        <div className="text-center">
+          <div className="text-6xl text-yellow-500 mb-4">⚠️</div>
+          <p className="text-yellow-500 text-lg mb-4">분석 보고서 데이터가 불완전합니다.</p>
+          <p className="text-gray-400 text-sm mb-6">일부 분석 데이터가 누락되어 표시할 수 없습니다.</p>
+          <div className="space-x-4">
+            <button
+              onClick={loadAnalysisData}
+              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              다시 시도
+            </button>
+            <button
+              onClick={() => router.push("/pastlist")}
+              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
+            >
+              목록으로
+            </button>
+          </div>
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="min-h-screen bg-black text-white">
       {/* 헤더 */}
@@ -196,11 +248,11 @@ export default function AnalysisDetailPage() {
               </svg>
               <span>목록으로</span>
             </button>
-            <h1 className="text-2xl font-bold">통화 분석 상세보기</h1>
+            <h1 className="text-2xl font-bold">보이스피싱 탐지 보고서</h1>
           </div>
           <div className="flex items-center space-x-4">
-            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getRiskLevelColor(analysisData.report.risk_level)}`}>
-              {getRiskLevelText(analysisData.report.risk_level)}
+            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getRiskLevelColor(report.risk_level)}`}>
+              {getRiskLevelText(report.risk_level)}
             </span>
             <span className="text-gray-400">ID: {analysisData.id}</span>
           </div>
@@ -212,12 +264,12 @@ export default function AnalysisDetailPage() {
         <div className="bg-gradient-to-r from-red-900 to-red-800 border border-red-600 rounded-lg p-6 mb-6">
           <div className="flex items-center justify-between">
             <div>
-              <h2 className="text-2xl font-bold text-white mb-2">🚨 위험도 분석 결과</h2>
-              <p className="text-red-200">{analysisData.report.summary}</p>
+              <h2 className="text-2xl font-bold text-white mb-2">🚨 보이스피싱 탐지 결과</h2>
+              <p className="text-red-200">{report.summary}</p>
             </div>
             <div className="text-center">
-              <div className={`text-4xl font-bold ${getRiskScoreColor(analysisData.report.risk_score)}`}>
-                {analysisData.report.risk_score}점
+              <div className={`text-4xl font-bold ${getRiskScoreColor(report.risk_score)}`}>
+                {report.risk_score}점
               </div>
               <div className="text-red-300 text-sm">위험도 점수</div>
             </div>
@@ -241,8 +293,8 @@ export default function AnalysisDetailPage() {
             </div>
             <div className="bg-gray-800 p-3 rounded-lg">
               <p className="text-gray-400 text-sm">위험도 점수</p>
-              <p className={`font-bold text-lg ${getRiskScoreColor(analysisData.report.risk_score)}`}>
-                {analysisData.report.risk_score}점
+              <p className={`font-bold text-lg ${getRiskScoreColor(report.risk_score)}`}>
+                {report.risk_score}점
               </p>
             </div>
             <div className="bg-gray-800 p-3 rounded-lg">
@@ -275,10 +327,10 @@ export default function AnalysisDetailPage() {
         <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4 flex items-center">
             <span className="mr-2">🚨</span>
-            위험 신호 ({analysisData.report.red_flags.length}개)
+            위험 신호 ({report.red_flags.length}개)
           </h2>
           <div className="space-y-4">
-            {analysisData.report.red_flags.map((flag, index) => (
+            {report.red_flags.map((flag, index) => (
               <div key={index} className="bg-gray-800 p-4 rounded-lg border-l-4 border-red-500 hover:bg-gray-700 transition-colors">
                 <div className="flex items-start justify-between">
                   <div className="flex-1">
@@ -304,7 +356,7 @@ export default function AnalysisDetailPage() {
             범죄 유형 분석
           </h2>
           <div className="space-y-4">
-            {analysisData.report.reasons.map((reason, index) => (
+            {report.reasons.map((reason, index) => (
               <div key={index} className="bg-gray-800 p-4 rounded-lg border-l-4 border-yellow-500">
                 <h3 className="font-semibold text-yellow-400 mb-2 flex items-center">
                   <span className="bg-yellow-500 text-black text-xs px-2 py-1 rounded-full mr-2">
@@ -312,7 +364,7 @@ export default function AnalysisDetailPage() {
                   </span>
                   {reason.type}
                 </h3>
-                <p className="text-gray-300 leading-relaxed">{reason.basis}</p>
+                <p className="text-gray-300 leading-relaxed">&ldquo;{reason.quote}&rdquo;</p>
               </div>
             ))}
           </div>
@@ -322,10 +374,10 @@ export default function AnalysisDetailPage() {
         <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4 flex items-center">
             <span className="mr-2">⏰</span>
-            통화 타임라인 ({analysisData.report.timeline.length}개 이벤트)
+            통화 타임라인 ({report.timeline.length}개 이벤트)
           </h2>
           <div className="space-y-3">
-            {analysisData.report.timeline.map((event, index) => (
+            {report.timeline.map((event, index) => (
               <div key={index} className="flex items-start space-x-4 bg-gray-800 p-3 rounded-lg">
                 <div className="bg-blue-600 text-white px-3 py-1 rounded text-sm font-medium min-w-[70px] text-center">
                   {event.t}
@@ -348,10 +400,10 @@ export default function AnalysisDetailPage() {
         <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4 flex items-center">
             <span className="mr-2">💡</span>
-            {analysisData.report.advice.title}
+            대응 조언
           </h2>
           <div className="space-y-3">
-            {analysisData.report.advice.items.map((advice, index) => (
+            {report.advice.map((advice, index) => (
               <div key={index} className="flex items-start space-x-3 bg-gray-800 p-3 rounded-lg hover:bg-gray-700 transition-colors">
                 <span className="text-green-400 text-lg font-bold">✓</span>
                 <p className="text-gray-300 leading-relaxed">{advice}</p>
@@ -367,7 +419,7 @@ export default function AnalysisDetailPage() {
             안전 대안
           </h2>
           <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-300 leading-relaxed">{analysisData.report.safe_alt}</p>
+            <p className="text-gray-300 leading-relaxed">{report.safe_alt}</p>
           </div>
         </div>
 
@@ -378,7 +430,7 @@ export default function AnalysisDetailPage() {
             탐지된 범죄 유형
           </h2>
           <div className="flex flex-wrap gap-2">
-            {analysisData.report.crime_types.map((crimeType, index) => (
+            {report.crime_types.map((crimeType, index) => (
               <span key={index} className="px-3 py-2 bg-red-900 text-red-300 text-sm rounded-lg border border-red-600 hover:bg-red-800 transition-colors">
                 {crimeType}
               </span>
