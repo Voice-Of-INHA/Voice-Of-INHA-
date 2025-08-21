@@ -103,7 +103,6 @@ const VoiceActivityDetector = {
     if (!this.isInitialized || !this.analyser || !this.dataArray) return 0;
     
     try {
-      this.analyser.getByteFrequencyData(this.dataArray);
       
       // 더 정교한 볼륨 계산 (RMS 방식)
       let sum = 0;
