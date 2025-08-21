@@ -1,408 +1,380 @@
 "use client"
 
 import { useState, useEffect, useCallback } from "react"
-import { useParams, useRouter } from "next/navigation"
+import HelpModal from "../components/modals/HelpModal"
 
-// 새로운 API 응답 데이터 타입 정의
-interface AnalysisData {
-  id: number
-  callId: number
-  audioGcsUri: string
-  transcript: string
-  report: {
-    advice: {
-      items: string[]
-      title: string
-    }
-    reasons: Array<{
-      type: string
-      basis: string
-    }>
-    summary: string
-    safe_alt: string
-    timeline: Array<{
-      t: string
-      event: string
-      quote: string
-    }>
-    red_flags: Array<{
-      name: string
-      quote: string
-      explanation: string
-    }>
-    risk_level: string
-    risk_score: number
-    crime_types: string[]
+interface AnalysisRecord {
+  id: string
+  phoneNumber: string
+  callDate: string
+  callDuration: string
+  riskPercentage: number
+  phishingType: string
+  keywords: string[]
+  audioFileUrl: string
+  risk: "medium" | "high"
+}
+
+// API 응답 데이터의 타입 정의
+interface ApiResponseItem {
+  id?: number
+  phone?: string
+  callDate?: string
+  totalSeconds?: number
+  riskScore?: number
+  fraudType?: string
+  keywords?: string[]
+  audioUrl?: string
+}
+
+// 초를 "00분 00초" 형식으로 변환하는 함수
+const formatDuration = (totalSeconds: number): string => {
+  const minutes = Math.floor(totalSeconds / 60)
+  const seconds = totalSeconds % 60
+  return `${minutes.toString().padStart(2, "0")}분 ${seconds
+    .toString()
+    .padStart(2, "0")}초`
+}
+
+// 날짜를 "0000년00월00일" 형식으로 변환하는 함수
+const formatDate = (dateString: string): string => {
+  try {
+    const date = new Date(dateString)
+    const year = date.getFullYear()
+    const month = (date.getMonth() + 1).toString().padStart(2, "0")
+    const day = date.getDate().toString().padStart(2, "0")
+    return `${year}년${month}월${day}일`
+  } catch {
+    return dateString // 변환 실패 시 원본 반환
   }
-  summary: string
-  crimeType: string
-  status: string
-  triggeredAt: string
-  completedAt: string
-  error: string | null
 }
 
-interface ApiResponse {
-  ok: boolean
-  status: string
-  data: AnalysisData
-}
-
-export default function AnalysisDetailPage() {
-  const params = useParams()
-  const router = useRouter()
-  const id = params.id as string
-  
-  const [analysisData, setAnalysisData] = useState<AnalysisData | null>(null)
+export default function PastListPage() {
+  const [records, setRecords] = useState<AnalysisRecord[]>([])
+  const [filteredRecords, setFilteredRecords] = useState<AnalysisRecord[]>([])
+  const [searchTerm, setSearchTerm] = useState("")
+  const [filterRisk, setFilterRisk] = useState<"all" | "high" | "medium">("all")
   const [isLoading, setIsLoading] = useState(true)
+  const [showHelpModal, setShowHelpModal] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
-  // useCallback에서 의존성 배열에서 자기 자신을 제거
-  const loadAnalysisData = useCallback(async () => {
+  const loadAnalysisRecords = useCallback(async () => {
     setIsLoading(true)
     setError(null)
 
     try {
-      console.log(`📋 분석 상세 데이터 조회 시작... ID: ${id}`)
+      console.log("📋 분석 이력 조회 시작...")
 
-      const response = await fetch(`/api/calls/${id}`, {
+      const response = await fetch("/api/calls", {
         method: "GET",
         headers: { "Content-Type": "application/json" },
       })
 
       if (!response.ok) {
         const errorText = await response.text()
-        throw new Error(`/api/calls/${id} 실패: ${response.status} - ${errorText}`)
+        throw new Error(`/api/calls 실패: ${response.status} - ${errorText}`)
       }
 
-      const data: ApiResponse = await response.json()
-      console.log("✅ 분석 상세 데이터 성공:", data)
+      const data = await response.json()
+      console.log("✅ /api/calls 성공:", data)
 
-      if (!data.ok || !data.data) {
-        throw new Error("데이터가 올바르지 않습니다.")
+      if (!data || !Array.isArray(data)) {
+        console.log("⚠️ 데이터가 없거나 배열이 아님, 빈 배열로 처리")
+        setRecords([])
+        return
       }
 
-      setAnalysisData(data.data)
+      const formattedRecords: AnalysisRecord[] = data.map(
+        (item: ApiResponseItem) => {
+          const riskScore = item.riskScore || 0
+          const callDate = item.callDate
+            ? formatDate(item.callDate)
+            : new Date().toISOString().split("T")[0]
+          const callDuration = item.totalSeconds
+            ? formatDuration(item.totalSeconds)
+            : "00분 00초"
 
+          return {
+            id: item.id?.toString() || Math.random().toString(),
+            phoneNumber: item.phone || "알 수 없음",
+            callDate: callDate,
+            callDuration: callDuration,
+            riskPercentage: riskScore,
+            phishingType: item.fraudType || "분석 중",
+            keywords: item.keywords || [],
+            audioFileUrl: item.audioUrl || "",
+            risk: riskScore >= 70 ? "high" : "medium",
+          }
+        }
+      )
+
+      setRecords(formattedRecords)
+      console.log("✅ 분석 이력 조회 완료:", formattedRecords.length, "건")
     } catch (error) {
-      console.error("❌ 분석 상세 데이터 조회 실패:", error)
-      setError(error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다.")
+      console.error("❌ 분석 이력 조회 실패:", error)
+      setError(
+        error instanceof Error ? error.message : "알 수 없는 오류가 발생했습니다"
+      )
+      setRecords([])
     } finally {
       setIsLoading(false)
     }
-  }, [id]) // id만 의존성 배열에 포함
+  }, [])
 
   useEffect(() => {
-    if (id) {
-      loadAnalysisData()
-    }
-  }, [id, loadAnalysisData]) // 이제 loadAnalysisData가 정상적으로 참조됩니다
+    loadAnalysisRecords()
+  }, [loadAnalysisRecords])
 
-  const formatDate = (dateString: string): string => {
-    try {
-      const date = new Date(dateString)
-      const year = date.getFullYear()
-      const month = (date.getMonth() + 1).toString().padStart(2, "0")
-      const day = date.getDate().toString().padStart(2, "0")
-      const hours = date.getHours().toString().padStart(2, "0")
-      const minutes = date.getMinutes().toString().padStart(2, "0")
-      return `${year}년${month}월${day}일 ${hours}시${minutes}분`
-    } catch {
-      return dateString
-    }
-  }
+  useEffect(() => {
+    let filtered = records
 
-  const getRiskLevelColor = (level: string) => {
-    switch (level.toUpperCase()) {
-      case "HIGH":
-        return "text-red-500 bg-red-100 border-red-300"
-      case "MEDIUM":
-        return "text-yellow-600 bg-yellow-100 border-yellow-300"
-      case "LOW":
-        return "text-green-600 bg-green-100 border-green-300"
+    if (searchTerm) {
+      filtered = filtered.filter(
+        (record) =>
+          record.phoneNumber.includes(searchTerm) ||
+          record.phishingType
+            .toLowerCase()
+            .includes(searchTerm.toLowerCase()) ||
+          record.keywords.some((keyword) =>
+            keyword.toLowerCase().includes(searchTerm.toLowerCase())
+          )
+      )
+    }
+
+    if (filterRisk !== "all") {
+      filtered = filtered.filter((record) => record.risk === filterRisk)
+    }
+
+    setFilteredRecords(filtered)
+  }, [searchTerm, filterRisk, records])
+
+  const getRiskBadge = (riskPercentage: number, risk: string) => {
+    switch (risk) {
+      case "high":
+        return (
+          <span className="px-3 py-1 bg-red-600 text-white text-sm rounded-full font-medium">
+            위험 {riskPercentage}%
+          </span>
+        )
+      case "medium":
+        return (
+          <span className="px-3 py-1 bg-yellow-600 text-white text-sm rounded-full font-medium">
+            주의 {riskPercentage}%
+          </span>
+        )
       default:
-        return "text-gray-600 bg-gray-100 border-gray-300"
+        return (
+          <span className="px-3 py-1 bg-gray-600 text-white text-sm rounded-full font-medium">
+            알 수 없음
+          </span>
+        )
     }
   }
 
-  const getRiskLevelText = (level: string) => {
-    switch (level.toUpperCase()) {
-      case "HIGH":
-        return "🔴 높음"
-      case "MEDIUM":
-        return "🟡 보통"
-      case "LOW":
-        return "🟢 낮음"
-      default:
-        return "⚪ 알 수 없음"
-    }
-  }
-
-  const getRiskScoreColor = (score: number) => {
-    if (score >= 80) return "text-red-500"
-    if (score >= 60) return "text-yellow-500"
-    return "text-green-500"
-  }
-
-  if (isLoading) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto mb-4"></div>
-          <p className="text-gray-400">분석 데이터를 불러오는 중...</p>
-        </div>
-      </div>
+  const getPhishingTypeColor = (phishingType: string) => {
+    if (
+      phishingType.includes("사기") ||
+      phishingType.includes("사칭") ||
+      phishingType.includes("협박")
     )
-  }
-
-  if (error || !analysisData) {
-    return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <div className="text-center">
-          <div className="text-6xl text-red-500 mb-4">⚠️</div>
-          <p className="text-red-500 text-lg mb-4">데이터를 불러오는 데 실패했습니다.</p>
-          <p className="text-gray-400 text-sm mb-6">{error}</p>
-          <div className="space-x-4">
-            <button
-              onClick={loadAnalysisData}
-              className="px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
-            >
-              다시 시도
-            </button>
-            <button
-              onClick={() => router.push("/pastlist")}
-              className="px-4 py-2 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors"
-            >
-              목록으로
-            </button>
-          </div>
-        </div>
-      </div>
-    )
+      return "bg-red-900 text-red-300"
+    return "bg-yellow-900 text-yellow-300"
   }
 
   return (
-    <div className="min-h-screen bg-black text-white">
-      {/* 헤더 */}
-      <div className="bg-gray-900 border-b border-gray-700 p-4">
-        <div className="max-w-6xl mx-auto flex items-center justify-between">
-          <div className="flex items-center space-x-4">
-            <button
-              onClick={() => router.push("/pastlist")}
-              className="flex items-center space-x-2 text-gray-400 hover:text-white transition-colors"
-            >
-              <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="m15 18-6-6 6-6"/>
-              </svg>
-              <span>목록으로</span>
-            </button>
-            <h1 className="text-2xl font-bold">통화 분석 상세보기</h1>
-          </div>
-          <div className="flex items-center space-x-4">
-            <span className={`px-3 py-1 rounded-full text-sm font-medium border ${getRiskLevelColor(analysisData.report.risk_level)}`}>
-              {getRiskLevelText(analysisData.report.risk_level)}
-            </span>
-            <span className="text-gray-400">ID: {analysisData.id}</span>
-          </div>
+    <main className="p-8 bg-black min-h-screen">
+      <div className="flex items-center justify-between mb-8">
+        <div className="flex space-x-2">
+          <button
+            className="flex items-center justify-center h-10 w-10 text-gray-400 hover:text-white transition-colors"
+            onClick={() => window.history.back()}
+            aria-label="뒤로 가기"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
+          <button
+            className="flex items-center justify-center h-10 w-10 text-gray-400 hover:text-white transition-colors"
+            onClick={() => setShowHelpModal(true)}
+            aria-label="도움말"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><circle cx="12" cy="12" r="10"/><path d="M9.09 9a3 3 0 0 1 5.84 1c0 2-3 3-3 3"/><path d="M12 17h.01"/></svg>
+          </button>
+          <button
+            className={`flex items-center justify-center h-10 w-10 text-gray-400 hover:text-white transition-colors ${isLoading ? 'animate-spin' : ''}`}
+            onClick={loadAnalysisRecords}
+            disabled={isLoading}
+            aria-label="새로고침"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="M21 12a9 9 0 0 0-9-9c-2.33 0-4.51.84-6.14 2.2a.23.23 0 0 0-.17.32l.71 1.95a.23.23 0 0 0 .33.14.93.93 0 0 1 .4-.18c1.3-.29 2.51-.43 3.61-.26a9 9 0 0 1 8.8 8.8c.17 1.1-.11 2.31-.38 3.61a.93.93 0 0 1-.18.4.23.23 0 0 0 .14.33l1.95.71a.23.23 0 0 0 .32-.17A9 9 0 0 0 21 12Z"/></svg>
+          </button>
+        </div>
+        <div className="flex items-center space-x-2">
+          <button
+            className="flex items-center justify-center h-10 w-10 text-gray-400 hover:text-white transition-colors"
+            onClick={() => window.location.href = "/"}
+            aria-label="홈으로 이동"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="h-5 w-5"><path d="m3 9 9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          </button>
         </div>
       </div>
 
-      <div className="max-w-6xl mx-auto p-6">
-        {/* 위험도 요약 카드 */}
-        <div className="bg-gradient-to-r from-red-900 to-red-800 border border-red-600 rounded-lg p-6 mb-6">
-          <div className="flex items-center justify-between">
-            <div>
-              <h2 className="text-2xl font-bold text-white mb-2">🚨 위험도 분석 결과</h2>
-              <p className="text-red-200">{analysisData.report.summary}</p>
-            </div>
-            <div className="text-center">
-              <div className={`text-4xl font-bold ${getRiskScoreColor(analysisData.report.risk_score)}`}>
-                {analysisData.report.risk_score}점
-              </div>
-              <div className="text-red-300 text-sm">위험도 점수</div>
-            </div>
+      <div className="max-w-6xl mx-auto">
+        <h1 className="text-3xl font-bold text-white mb-8 text-center">과거 분석 이력</h1>
+
+        <div className="mb-6 flex flex-col sm:flex-row gap-4">
+          <div className="relative flex-1">
+            <span className="absolute left-3 top-1/2 transform -translate-y-1/2 text-gray-400">🔍</span>
+            <input
+              type="text"
+              placeholder="전화번호, 유형, 키워드로 검색..."
+              value={searchTerm}
+              onChange={(e) => setSearchTerm(e.target.value)}
+              className="w-full pl-10 pr-4 py-3 bg-gray-800 border border-gray-600 text-white placeholder-gray-400 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              onClick={() => setFilterRisk('all')}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                filterRisk === 'all' 
+                  ? 'bg-gray-600 text-white' 
+                  : 'bg-gray-800 text-gray-300 hover:bg-gray-700'
+              }`}
+            >
+              전체
+            </button>
+            <button
+              onClick={() => setFilterRisk('high')}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                filterRisk === 'high' 
+                  ? 'bg-red-600 text-white' 
+                  : 'bg-gray-800 text-red-400 hover:bg-red-600 hover:text-white border border-red-600'
+              }`}
+            >
+              위험
+            </button>
+            <button
+              onClick={() => setFilterRisk('medium')}
+              className={`px-4 py-2 rounded-lg font-medium transition-colors ${
+                filterRisk === 'medium' 
+                  ? 'bg-yellow-600 text-white' 
+                  : 'bg-gray-800 text-yellow-400 hover:bg-yellow-600 hover:text-white border border-yellow-600'
+              }`}
+            >
+              주의
+            </button>
           </div>
         </div>
 
-        {/* 기본 정보 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">📞</span>
-            기본 정보
-          </h2>
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <p className="text-gray-400 text-sm">통화 ID</p>
-              <p className="text-white font-medium">{analysisData.callId}</p>
-            </div>
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <p className="text-gray-400 text-sm">범죄 유형</p>
-              <p className="text-white font-medium">{analysisData.crimeType}</p>
-            </div>
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <p className="text-gray-400 text-sm">위험도 점수</p>
-              <p className={`font-bold text-lg ${getRiskScoreColor(analysisData.report.risk_score)}`}>
-                {analysisData.report.risk_score}점
-              </p>
-            </div>
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <p className="text-gray-400 text-sm">분석 상태</p>
-              <p className="text-white font-medium">{analysisData.status}</p>
-            </div>
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <p className="text-gray-400 text-sm">분석 시작</p>
-              <p className="text-white font-medium">{formatDate(analysisData.triggeredAt)}</p>
-            </div>
-            <div className="bg-gray-800 p-3 rounded-lg">
-              <p className="text-gray-400 text-sm">분석 완료</p>
-              <p className="text-white font-medium">{formatDate(analysisData.completedAt)}</p>
-            </div>
+        {isLoading ? (
+          <div className="text-center py-12">
+            <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-white mx-auto"></div>
+            <p className="text-gray-400 mt-4">데이터를 불러오는 중...</p>
           </div>
-        </div>
-
-        {/* 통화 내용 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">🎤</span>
-            통화 내용
-          </h2>
-          <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-300 whitespace-pre-wrap leading-relaxed">{analysisData.transcript}</p>
+        ) : error ? (
+          <div className="text-center py-12">
+            <p className="text-red-500">데이터를 불러오는 데 실패했습니다.</p>
+            <p className="text-gray-400 text-sm mt-2">{error}</p>
+            <button
+              onClick={loadAnalysisRecords}
+              className="mt-4 px-4 py-2 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors"
+            >
+              다시 시도
+            </button>
           </div>
-        </div>
-
-        {/* 위험 신호 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">🚨</span>
-            위험 신호 ({analysisData.report.red_flags.length}개)
-          </h2>
-          <div className="space-y-4">
-            {analysisData.report.red_flags.map((flag, index) => (
-              <div key={index} className="bg-gray-800 p-4 rounded-lg border-l-4 border-red-500 hover:bg-gray-700 transition-colors">
-                <div className="flex items-start justify-between">
-                  <div className="flex-1">
-                    <h3 className="font-semibold text-red-400 mb-2 flex items-center">
-                      <span className="bg-red-500 text-white text-xs px-2 py-1 rounded-full mr-2">
-                        {index + 1}
+        ) : filteredRecords.length === 0 ? (
+          <div className="text-center py-12">
+            <div className="text-6xl text-gray-400 mb-4">🛡️</div>
+            <p className="text-gray-400 text-lg">
+              {records.length === 0 ? "아직 분석된 통화가 없습니다." : "검색 결과가 없습니다."}
+            </p>
+          </div>
+        ) : (
+          <>
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4 mb-8">
+              {filteredRecords.map((record) => (
+                <div 
+                  key={record.id} 
+                  className="bg-gray-900 border border-gray-700 rounded-lg hover:bg-gray-800 transition-colors shadow-lg cursor-pointer"
+                  onClick={() => window.location.href = `/pastlist/${record.id}`}
+                >
+                  <div className="p-6">
+                    <div className="flex items-start justify-between mb-4">
+                      <div className="flex items-center space-x-3">
+                        <div className="flex-shrink-0">
+                          {record.risk === 'high' ? 
+                            <span className="text-red-500 text-2xl">⚠️</span> : 
+                            <span className="text-yellow-500 text-2xl">🛡️</span>
+                          }
+                        </div>
+                        <div>
+                          <h3 className="text-white text-lg font-semibold">{record.phoneNumber}</h3>
+                          <p className="text-sm text-gray-400">
+                            <span className="mr-1">📅</span>
+                            {record.callDate}
+                          </p>
+                          <p className="text-sm text-gray-400">
+                            <span className="mr-1">📞</span>
+                            {record.callDuration}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="flex-shrink-0">
+                        {getRiskBadge(record.riskPercentage, record.risk)}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 mb-3">
+                      <span className={`px-2 py-1 text-xs rounded-full ${getPhishingTypeColor(record.phishingType)}`}>
+                        {record.phishingType}
                       </span>
-                      {flag.name}
-                    </h3>
-                    <p className="text-gray-300 mb-2 font-medium">&ldquo;{flag.quote}&rdquo;</p>
-                    <p className="text-gray-400 text-sm leading-relaxed">{flag.explanation}</p>
+                    </div>
+                    {record.keywords.length > 0 && (
+                      <div className="flex flex-wrap gap-1">
+                        {record.keywords.slice(0, 3).map((keyword, index) => (
+                          <span key={index} className="px-2 py-1 bg-blue-900 text-blue-300 text-xs rounded">
+                            {keyword}
+                          </span>
+                        ))}
+                        {record.keywords.length > 3 && (
+                          <span className="px-2 py-1 bg-gray-700 text-gray-300 text-xs rounded">
+                            +{record.keywords.length - 3}
+                          </span>
+                        )}
+                      </div>
+                    )}
                   </div>
                 </div>
-              </div>
-            ))}
-          </div>
-        </div>
+              ))}
+            </div>
 
-        {/* 범죄 유형 및 근거 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">🔍</span>
-            범죄 유형 분석
-          </h2>
-          <div className="space-y-4">
-            {analysisData.report.reasons.map((reason, index) => (
-              <div key={index} className="bg-gray-800 p-4 rounded-lg border-l-4 border-yellow-500">
-                <h3 className="font-semibold text-yellow-400 mb-2 flex items-center">
-                  <span className="bg-yellow-500 text-black text-xs px-2 py-1 rounded-full mr-2">
-                    {index + 1}
-                  </span>
-                  {reason.type}
-                </h3>
-                <p className="text-gray-300 leading-relaxed">{reason.basis}</p>
+            <div className="mt-8 grid grid-cols-1 md:grid-cols-3 gap-4">
+              <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-center">
+                <div className="text-2xl font-bold text-white mb-1">{records.length}</div>
+                <div className="text-sm text-gray-400">총 분석 건수</div>
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 타임라인 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">⏰</span>
-            통화 타임라인 ({analysisData.report.timeline.length}개 이벤트)
-          </h2>
-          <div className="space-y-3">
-            {analysisData.report.timeline.map((event, index) => (
-              <div key={index} className="flex items-start space-x-4 bg-gray-800 p-3 rounded-lg">
-                <div className="bg-blue-600 text-white px-3 py-1 rounded text-sm font-medium min-w-[70px] text-center">
-                  {event.t}
+              <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-center">
+                <div className="text-2xl font-bold text-red-400 mb-1">
+                  {records.filter(r => r.risk === 'high').length}
                 </div>
-                <div className="flex-1">
-                  <h4 className="font-medium text-white mb-1 flex items-center">
-                    <span className="bg-blue-500 text-white text-xs px-2 py-1 rounded-full mr-2">
-                      {index + 1}
-                    </span>
-                    {event.event}
-                  </h4>
-                  <p className="text-gray-300 text-sm italic">&ldquo;{event.quote}&rdquo;</p>
+                <div className="text-sm text-gray-400">위험 탐지</div>
+              </div>
+              <div className="bg-gray-900 border border-gray-700 rounded-lg p-4 text-center">
+                <div className="text-2xl font-bold text-yellow-400 mb-1">
+                  {records.filter(r => r.risk === 'medium').length}
                 </div>
+                <div className="text-sm text-gray-400">주의 필요</div>
               </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 대응 조언 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">💡</span>
-            {analysisData.report.advice.title}
-          </h2>
-          <div className="space-y-3">
-            {analysisData.report.advice.items.map((advice, index) => (
-              <div key={index} className="flex items-start space-x-3 bg-gray-800 p-3 rounded-lg hover:bg-gray-700 transition-colors">
-                <span className="text-green-400 text-lg font-bold">✓</span>
-                <p className="text-gray-300 leading-relaxed">{advice}</p>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        {/* 안전 대안 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">🛡️</span>
-            안전 대안
-          </h2>
-          <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-300 leading-relaxed">{analysisData.report.safe_alt}</p>
-          </div>
-        </div>
-
-        {/* 범죄 유형 태그 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">🏷️</span>
-            탐지된 범죄 유형
-          </h2>
-          <div className="flex flex-wrap gap-2">
-            {analysisData.report.crime_types.map((crimeType, index) => (
-              <span key={index} className="px-3 py-2 bg-red-900 text-red-300 text-sm rounded-lg border border-red-600 hover:bg-red-800 transition-colors">
-                {crimeType}
-              </span>
-            ))}
-          </div>
-        </div>
-
-        {/* 오디오 파일 정보 */}
-        <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 mb-6">
-          <h2 className="text-xl font-semibold mb-4 flex items-center">
-            <span className="mr-2">🎵</span>
-            오디오 파일
-          </h2>
-          <div className="bg-gray-800 p-4 rounded-lg">
-            <p className="text-gray-400 text-sm mb-2">GCS URI:</p>
-            <p className="text-gray-300 font-mono text-sm break-all bg-gray-700 p-2 rounded">
-              {analysisData.audioGcsUri}
-            </p>
-            <p className="text-gray-500 text-xs mt-2">
-              * 이 파일은 Google Cloud Storage에 저장되어 있습니다.
-            </p>
-          </div>
-        </div>
+            </div>
+          </>
+        )}
       </div>
-    </div>
+
+      <HelpModal
+        isOpen={showHelpModal}
+        onClose={() => setShowHelpModal(false)}
+        initialPage="pastlist"
+      />
+    </main>
   )
 }

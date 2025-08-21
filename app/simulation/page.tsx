@@ -12,7 +12,16 @@ export default function SimulationPage() {
   const checkBackendHealth = async () => {
     try {
       console.log('백엔드 헬스 체크 시작...')
-      const response = await fetch('/api/proxy?path=health')
+      
+      // 타임아웃 설정 (5초)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 5000)
+      
+      const response = await fetch('/api/proxy?path=health', {
+        signal: controller.signal
+      })
+      
+      clearTimeout(timeoutId)
       
       if (response.ok) {
         setBackendStatus('online')
@@ -20,10 +29,14 @@ export default function SimulationPage() {
         await loadScenarios()
       } else {
         setBackendStatus('offline')
+        // 오프라인 상태에서도 더미 데이터 로드
+        await loadScenarios()
       }
     } catch (error) {
       console.error('백엔드 헬스 체크 실패:', error)
       setBackendStatus('offline')
+      // 오프라인 상태에서도 더미 데이터 로드
+      await loadScenarios()
     }
   }
 
@@ -32,10 +45,20 @@ export default function SimulationPage() {
     setShowScenarios(true)
     await loadScenarios()
   }
+
   const loadScenarios = async () => {
     try {
       setLoading(true)
-      const response = await fetch('/api/proxy?path=scenarios')
+      
+      // 타임아웃 설정 (3초)
+      const controller = new AbortController()
+      const timeoutId = setTimeout(() => controller.abort(), 3000)
+      
+      const response = await fetch('/api/proxy?path=scenarios', {
+        signal: controller.signal
+      })
+      
+      clearTimeout(timeoutId)
       
       if (response.ok) {
         const data = await response.json()
@@ -81,7 +104,7 @@ export default function SimulationPage() {
   // 컴포넌트 마운트시 백엔드 상태 확인
   useEffect(() => {
     checkBackendHealth()
-  }, [checkBackendHealth])
+  }, [])
 
   return (
     <div className="min-h-screen relative overflow-hidden bg-black">
@@ -136,11 +159,11 @@ export default function SimulationPage() {
             <div className="border-2 border-white p-4">
               <button 
                 onClick={handleShowScenarios}
-                disabled={backendStatus !== 'online'}
+                disabled={backendStatus === 'checking'}
                 className={`w-full py-4 px-8 font-bold text-xl transition-all duration-200 ${
-                  backendStatus === 'online'
-                    ? 'bg-white text-black hover:bg-gray-200'
-                    : 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                  backendStatus === 'checking'
+                    ? 'bg-gray-600 text-gray-400 cursor-not-allowed'
+                    : 'bg-white text-black hover:bg-gray-200'
                 }`}
               >
                 {backendStatus === 'checking' ? '연결 확인 중...' : '시나리오 선택하기'}
