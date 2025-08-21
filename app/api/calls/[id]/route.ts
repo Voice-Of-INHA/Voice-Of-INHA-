@@ -137,10 +137,10 @@ const mockAnalysisData: Record<string, AnalysisData> = {
 // 개별 통화 분석 데이터를 반환하는 GET 엔드포인트
 export async function GET(
   request: NextRequest,
-  { params }: { params: { id: string } }
+  { params }: { params: Promise<{ id: string }> }
 ) {
   try {
-    const { id } = params
+    const { id } = await params
     console.log(`📋 개별 통화 분석 데이터 조회 요청: ID ${id}`)
     
     // 실제 구현에서는 데이터베이스에서 해당 ID의 데이터를 조회
