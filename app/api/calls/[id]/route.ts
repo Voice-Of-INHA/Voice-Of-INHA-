@@ -185,39 +185,24 @@ const mockAnalysisData: Record<string, AnalysisData> = {
   }
 }
 
-export async function GET(
-  request: NextRequest,
-  { params }: { params: { id: string } }
-) {
+// 전체 calls 목록을 반환하는 GET 엔드포인트
+export async function GET(request: NextRequest) {
   try {
-    const id = params.id
+    console.log('📋 API 요청 받음: /api/calls (전체 목록)')
     
-    console.log(`📋 API 요청 받음: /api/calls/${id}`)
+    // 실제 구현에서는 데이터베이스에서 전체 데이터를 조회
+    // const allAnalysisData = await getAllAnalysisDataFromDB()
     
-    // 실제 구현에서는 데이터베이스에서 데이터를 조회
-    // const analysisData = await getAnalysisDataFromDB(id)
+    // 임시로 목업 데이터를 배열로 변환하여 반환
+    const allAnalysisData = Object.values(mockAnalysisData)
     
-    // 임시로 목업 데이터 사용
-    const analysisData = mockAnalysisData[id]
+    console.log(`✅ 전체 calls 목록 조회 성공 (${allAnalysisData.length}개)`)
     
-    if (!analysisData) {
-      console.log(`❌ ID ${id}에 해당하는 분석 데이터를 찾을 수 없음`)
-      return NextResponse.json(
-        { 
-          ok: false, 
-          status: "NOT_FOUND", 
-          message: `ID ${id}에 해당하는 분석 데이터를 찾을 수 없습니다.`,
-          data: null 
-        },
-        { status: 404 }
-      )
-    }
-    
-    console.log(`✅ ID ${id} 분석 데이터 조회 성공`)
     return NextResponse.json({
       ok: true,
       status: "SUCCESS",
-      data: analysisData
+      data: allAnalysisData,
+      count: allAnalysisData.length
     })
     
   } catch (error) {
@@ -228,7 +213,8 @@ export async function GET(
         ok: false, 
         status: "ERROR", 
         message: "서버 에러가 발생했습니다.",
-        data: null 
+        data: null,
+        count: 0
       },
       { status: 500 }
     )
